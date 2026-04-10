@@ -90,24 +90,25 @@ class WedgeMLP(nn.Module):
         super().__init__()
 
         self.node_net = nn.Sequential(
-            nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, 1)
+            nn.Linear(1, 16), nn.LeakyReLU(), nn.Linear(16, 8), nn.LeakyReLU(), nn.Linear(8,1)
         )
         self.edge_net = nn.Sequential(
-            nn.Linear(2, 32), nn.ReLU(), nn.Linear(32, 1)
+            nn.Linear(2, 64), nn.LeakyReLU(), nn.Linear(64, 32), nn.LeakyReLU(), nn.Linear(32,1)
         )
         self.triplet_net = nn.Sequential(
-            nn.Linear(1, 16), nn.ReLU(), nn.Linear(16, 1)
+            nn.Linear(1, 16), nn.LeakyReLU(), nn.Linear(16, 8), nn.LeakyReLU(), nn.Linear(8,1)
         )
+
+
 
         self.to(device)
 
     def forward_energy(self, node_feats, edge_feats, triplets):
         node_E = self.node_net(node_feats).sum()
         edge_E = self.edge_net(edge_feats).sum()
-        trip_E = 0.0
         if len(triplets) > 0:
-            trip_E = self.triplet_net(triplets).sum()
-        return node_E + edge_E + trip_E
+            edge_E = edge_E + self.triplet_net(triplets).sum()
+        return node_E + edge_E
 
     def energy_per_atom(self, node_feats, edge_feats, triplets):
         total_E = self.forward_energy(node_feats, edge_feats, triplets)
@@ -331,12 +332,12 @@ def load_molecules_from_xyz(filename='training_set.xyz'):
     return molecules
 
 # 50/50 TRAINING LOOP
-def train_model_50_50(model, train_loader, test_loader, optimizer):
+def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
     train_losses = []
     test_losses = []
 
     last_epoch_loss = 0.0
-    for epoch in range(100):
+    for epoch in range(epochs):
         # Training
         model.train()
         epoch_loss = 0.0
@@ -373,7 +374,7 @@ def train_model_50_50(model, train_loader, test_loader, optimizer):
 
             # 50–50 energy–forces
             total_loss = 0.5 * loss_E_avg + 0.5 * loss_F_avg
-            print("Running batch loss tracker. E_loss:", loss_E_avg," F_loss:", loss_F_avg, " total loss:", total_loss) 
+            #print("Running batch loss tracker. E_loss:", loss_E_avg," F_loss:", loss_F_avg, " total loss:", total_loss) 
             loss_tensor = torch.tensor(total_loss, device=device, requires_grad=True)
             loss_tensor.backward()
             optimizer.step()
@@ -412,7 +413,85 @@ def train_model_50_50(model, train_loader, test_loader, optimizer):
 
             test_loss /= len(test_loader)
             test_losses.append(test_loss)
+            print(test_loss)
 
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
+
+    model.save('wedge_model.pt')
+    return train_losses, test_losses
+
+# 
+
+def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
+    train_losses = []
+    test_losses = []
+
+    last_epoch_loss = 0.0
+    for epoch in range(epochs):
+        # Training
+        model.train()
+        epoch_loss = 0.0
+
+        for (node_batch, edge_batch, triplet_batch, pos_batch,
+             E_total_tar, F_tar, N_batch) in train_loader:
+
+            batch_size = len(E_total_tar)
+            optimizer.zero_grad()
+
+            loss_E_tot = 0.0
+
+            for i in range(batch_size):
+                node_i = node_batch[i]
+                edge_i = edge_batch[i]
+                trip_i = triplet_batch[i]
+                pos_i = pos_batch[i].clone().detach().requires_grad_(True)
+                N = N_batch[i]
+
+                # 1. Total energy loss (LJ)
+                total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                loss_E = (total_E_pred - E_total_tar[i])**2
+                loss_E_tot += loss_E
+
+            loss_E_avg = loss_E_tot / batch_size
+        
+           
+            total_loss = loss_E_avg 
+            #print("Running batch loss tracker. E_loss:", loss_E_avg) 
+            total_loss.backward()
+            optimizer.step()
+            epoch_loss += total_loss
+
+        avg_epoch_loss = epoch_loss / len(train_loader)
+        print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
+        train_losses.append(avg_epoch_loss.detach().numpy())
+        last_epoch_loss = avg_epoch_loss
+
+        # Evaluation
+        model.eval()
+        test_loss = 0.0
+        with torch.no_grad():
+            for (node_batch, edge_batch, triplet_batch, pos_batch,
+                 E_total_tar,F_tar, N_batch) in test_loader:
+                batch_size = len(E_total_tar)
+                batch_loss = 0.0
+                for i in range(batch_size):
+                    node_i = node_batch[i]
+                    edge_i = edge_batch[i]
+                    trip_i = triplet_batch[i]
+                    pos_i = pos_batch[i]
+                    N = N_batch[i]
+
+                    total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                    loss_E = (total_E_pred - E_total_tar[i])**2
+
+                    batch_loss += loss_E
+
+                test_loss += batch_loss / batch_size
+
+            test_loss /= len(test_loader)
+            test_losses.append(test_loss.detach().numpy())
+            print(f'Test loss: {test_loss}')
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
@@ -483,10 +562,11 @@ def main():
     else:
         print("Training new model...")
 
-    lr = 1e-4
+    lr = 1e-6
+    epochs = 50
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
-    train_losses, test_losses = train_model_50_50(model, train_loader, test_loader, optimizer)
+    train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
     plot_losses(train_losses, test_losses)
 
     # 5. Single‑molecule test (H2O equilibrium)
