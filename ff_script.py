@@ -90,13 +90,20 @@ class WedgeMLP(nn.Module):
         super().__init__()
 
         self.node_net = nn.Sequential(
-            nn.Linear(1, 16), nn.LeakyReLU(), nn.Linear(16, 8), nn.LeakyReLU(), nn.Linear(8,1)
+            nn.Linear(1, 16), nn.LeakyReLU(), 
+            nn.Linear(16, 8), nn.LeakyReLU(), 
+            nn.Linear(8,4), nn.LeakyReLU(), nn.Linear(4,1)
         )
         self.edge_net = nn.Sequential(
-            nn.Linear(2, 64), nn.LeakyReLU(), nn.Linear(64, 32), nn.LeakyReLU(), nn.Linear(32,1)
+            nn.Linear(2, 64), nn.LeakyReLU(), 
+            nn.Linear(64, 32), nn.LeakyReLU(), 
+            nn.Linear(32, 16), nn.LeakyReLU(), 
+            nn.Linear(16,4), nn.LeakyReLU(), nn.Linear(4,1)
         )
         self.triplet_net = nn.Sequential(
-            nn.Linear(1, 16), nn.LeakyReLU(), nn.Linear(16, 8), nn.LeakyReLU(), nn.Linear(8,1)
+            nn.Linear(1, 16), nn.LeakyReLU(), 
+            nn.Linear(16, 8), nn.LeakyReLU(), 
+            nn.Linear(8,4), nn.LeakyReLU(), nn.Linear(4,1)
         )
 
 
@@ -147,7 +154,7 @@ class WedgeMLP(nn.Module):
 
         return total_E, forces
     
-    def save(self, filename='wedge_model.pt'):
+    def save(self, filename='wedge_model_energy.pt'):
 
         torch.save(self.state_dict(), filename)
         print(f"Model saved to {filename}")
@@ -361,13 +368,13 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
                 # 1. Total energy loss (LJ)
                 total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
                 loss_E = (total_E_pred - E_total_tar[i])**2
-                loss_E_tot += loss_E.item()
+                loss_E_tot += loss_E
 
                 # 2. Per‑atom force loss (LJ forces)
                 total_E_actual, F_pred = model.energy_and_forces(node_i, edge_i, trip_i, pos_i)
                 F_tar_i = F_tar[i]  # (N, 3)
                 F_loss = ((F_pred - F_tar_i)**2).sum() / (3 * N)  # per‑atom MSE
-                loss_F_tot += F_loss.item()
+                loss_F_tot += F_loss
 
             loss_E_avg = loss_E_tot / batch_size
             loss_F_avg = loss_F_tot / batch_size
@@ -375,14 +382,14 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
             # 50–50 energy–forces
             total_loss = 0.5 * loss_E_avg + 0.5 * loss_F_avg
             #print("Running batch loss tracker. E_loss:", loss_E_avg," F_loss:", loss_F_avg, " total loss:", total_loss) 
-            loss_tensor = torch.tensor(total_loss, device=device, requires_grad=True)
-            loss_tensor.backward()
+            #loss_tensor = torch.tensor(total_loss, device=device, requires_grad=True)
+            total_loss.backward()
             optimizer.step()
             epoch_loss += total_loss
 
         avg_epoch_loss = epoch_loss / len(train_loader)
         print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
-        train_losses.append(avg_epoch_loss)
+        train_losses.append(avg_epoch_loss.detach().numpy())
         last_epoch_loss = avg_epoch_loss
 
         # Evaluation
@@ -412,13 +419,14 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
                 test_loss += batch_loss / batch_size
 
             test_loss /= len(test_loader)
-            test_losses.append(test_loss)
-            print(test_loss)
+            test_losses.append(test_loss.detach().numpy())
+            print(f'Test loss: {test_loss}')
+            
 
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('wedge_model.pt')
+    model.save('wedge_model_energy.pt')
     return train_losses, test_losses
 
 # 
@@ -495,27 +503,27 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('wedge_model.pt')
+    model.save('wedge_model_energy.pt')
     return train_losses, test_losses
 
 
 # VISUALIZATION
 def plot_losses(train_losses, test_losses):
     plt.figure(figsize=(10, 4))
-    plt.plot(train_losses, label='Train Loss (50/50 E+F)')
-    plt.plot(test_losses,  label='Test Loss  (50/50 E+F)')
+    plt.plot(train_losses, label='Train Loss for energy')
+    plt.plot(test_losses,  label='Test Loss for energy')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('WedgeForceField Training (LJ‑H2O/HF, 50/50 energy–forces)')
+    plt.title('WedgeForceField Training (LJ‑H2O/HF for energy)')
     plt.legend()
-    plt.savefig('training_loss.png', dpi=150, bbox_inches='tight')
+    plt.savefig('training_loss_energy.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 
 # MAIN EXECUTION
 def main():
     mol_filename = 'training_set.xyz'
-    model_filename = 'wedge_model.pt'
+    model_filename = 'wedge_model_energy.pt'
 
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
