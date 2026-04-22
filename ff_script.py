@@ -8,6 +8,13 @@ from scipy.spatial.distance import pdist, squareform
 import matplotlib.pyplot as plt
 import os
 
+# for message passing
+import torch.nn.functional as F
+from torch_geometric.nn import GCNConv
+
+
+
+
 
 """
 WedgeForceField:
