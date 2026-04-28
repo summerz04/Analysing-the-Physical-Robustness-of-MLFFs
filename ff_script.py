@@ -12,10 +12,6 @@ import os
 import torch.nn.functional as F
 from torch_geometric.nn import GCNConv
 
-
-
-
-
 """
 WedgeForceField:
 - Variable‑size molecules (2, 3, ..., N atoms).
@@ -31,7 +27,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 
-# PRIME ENCODING, labelling elements
+# PRIME ENCODING, labelling elements. NODE FEATURES
 prime_assign = {'H': 2, 'O': 7, 'F': 11, 'N': 13, 'C': 17}
 log_primes = {el: np.log(p) for el, p in prime_assign.items()}
 
@@ -41,6 +37,7 @@ def quadrance(pos):
     return squareform(pdist(pos, 'sqeuclidean'))
 
 
+# returns array of every atom pair in the molecule
 def get_edge_features(elements, pos):
     """Edge tokens: [log(p_i*p_j), Q_ij] for i < j."""
     N = len(elements)
@@ -53,7 +50,7 @@ def get_edge_features(elements, pos):
     Q = quadrance(pos)[i_idx, j_idx]
     return np.stack([log_prods, Q], axis=-1)
 
-
+# triples, describes two edges 
 def wedge_product(edge_feats):
     """Wedge product: wedge(e1,e2) = t1*q2 - q1*t2."""
     E = len(edge_feats)
@@ -87,7 +84,7 @@ def lj_forces(pos, epsilon=0.1, scale=0.1):
     return forces
 
 
-# MODEL: energy + per‑atom forces
+# Linear MLP MODEL: energy + per‑atom forces
 class WedgeMLP(nn.Module):
     """
     forward_energy: scalar E_total.
@@ -164,8 +161,14 @@ class WedgeMLP(nn.Module):
     def save(self, filename='wedge_model_energy.pt'):
 
         torch.save(self.state_dict(), filename)
-        print(f"Model saved to {filename}")
+        print(f"Model saved to {filename}") 
 
+# GRAPH NN MODEL -------------------------------
+# 1. get node features
+# 2. get edge features 
+# 3. get triplet features
+
+# 4. create pytorch geometric data object
 
 # DATASET GENERATION
 def generate_molecules(n_h2o=4000, n_hf=1500, filename='training_set.xyz'):
