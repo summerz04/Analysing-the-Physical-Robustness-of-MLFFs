@@ -571,7 +571,7 @@ def main():
         print("Training new model...")
 
     lr = 1e-6
-    epochs = 10
+    epochs = 20
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
     train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
