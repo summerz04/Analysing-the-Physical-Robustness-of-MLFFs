@@ -21,6 +21,9 @@ import torch_geometric.utils as utils
 from torch_geometric.utils import add_self_loops, degree, to_edge_index
 from torch_geometric.data import Data
 
+def sigmoid(x):
+    """Sigmoid activation function"""
+    return 1 / (1 + np.exp(-np.clip(x, -500, 500)))
 
 # Device selection
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -30,6 +33,32 @@ print(f"Using device: {device}")
 # PRIME ENCODING, labelling elements
 prime_assign = {'H': 2, 'O': 7, 'F': 11, 'N': 13, 'C': 17}
 log_primes = {el: np.log(p) for el, p in prime_assign.items()}
+
+# returns array of every atom pair in the molecule
+def get_edge_features(elements, pos):
+    """Edge tokens: [log(p_i*p_j), Q_ij] for i < j."""
+    N = len(elements)
+    if N < 2:
+        return np.empty((0, 2))
+
+    i_idx, j_idx = np.triu_indices(N, k=1)
+    log_prods = np.array([log_primes[elements[i]] + log_primes[elements[j]]
+                         for i, j in zip(i_idx, j_idx)])
+    Q = quadrance(pos)[i_idx, j_idx]
+    return np.stack([log_prods, Q], axis=-1)
+
+# tripletss describes two edges 
+def wedge_product(edge_feats):
+    """Wedge product: wedge(e1,e2) = t1*q2 - q1*t2."""
+    E = len(edge_feats)
+    if E < 2:
+        return np.array([])
+
+    if edge_feats.ndim == 1:
+        edge_feats = edge_feats.reshape(1, 2)
+
+    t, q = edge_feats[:, 0], edge_feats[:, 1]
+    return t[:-1] * q[1:] - q[:-1] * t[1:]
 
 def generate_molecules(n_h2o=4000, n_hf=1500, filename='training_set.xyz'):
     """
@@ -157,18 +186,17 @@ def quadrance(pos):
 
 
 class SimpleGCN(torch.nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.conv1 = GCNConv(1,1) 
+    def __init__(self, input_dim, hidden_dim, output_dim):
+        super(SimpleGCN, self).__init__()
+        self.conv1 = GCNConv(input_dim, hidden_dim)
+        self.conv2 = GCNConv(hidden_dim, output_dim) 
 
     def forward(self, x, edge_index):
         
         x = self.conv1(x, edge_index)
-        return F.relu(x)
-
-
-
-    
+        x = F.relu(x) # activation function 
+        x = self.conv2(x, edge_index)
+        return x 
 
 # Linear MLP MODEL: energy + per atom forces
 class MLP(nn.Module):
@@ -176,29 +204,39 @@ class MLP(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.GCN = SimpleGCN()
+        self.GCN = SimpleGCN(input_dim=2, hidden_dim=4, output_dim=2)
 
         self.node_net = nn.Sequential(
             nn.Linear(2, 16), nn.LeakyReLU(), 
             nn.Linear(16, 8), nn.LeakyReLU(), 
-            nn.Linear(8,4), nn.LeakyReLU(), nn.Linear(4,1)
+            nn.Linear(8, 1)
         )
        
         self.to(device)
 
-    def forward(self, node_feats, edge_feats):
-        distance = quadrance(edge_feats.cpu())
+    def forward(self, node_feats, position):
+        # DEFINE PHYSICS BETWEEN ATOMS, calculate invariant distances, how strongly do atoms interact
+        distance = quadrance(position.cpu())
+        
+
+        # DEFINE EDGES, how strongly do atoms interact within a cut off
         adjacency = torch.from_numpy(np.where(distance < 2, 1.0, 0.0)).float()
+        
         adjacency = adjacency.to_sparse()
+
         edge_index, edge_attr = utils.to_edge_index(adjacency)
         edge_index = edge_index.to(device)
+
+        # message passing
         new_node_feats = self.GCN(node_feats, edge_index)
+        
+        # combine all features into combined feats
         combined_feats = torch.cat([node_feats, new_node_feats], dim=1)
         node_E = self.node_net(combined_feats).sum()
 
         return node_E
     
-    def save(self, filename='gcn_test.pt'):
+    def save(self, filename='gcn_test2.pt'):
 
         torch.save(self.state_dict(), filename)
         print(f"Model saved to {filename}") 
@@ -209,16 +247,13 @@ def train_model(model, train_loader, test_loader, optimizer, epochs):
 
     model.train()
     for epoch in range(epochs):
-        # Training
+        # training
         
         epoch_loss = 0.0
 
         for (node_batch, pos_batch,
              E_total_tar, N_batch) in train_loader:
-
-           
             
-
             batch_size = len(E_total_tar)
             optimizer.zero_grad()
 
@@ -285,7 +320,7 @@ def train_model(model, train_loader, test_loader, optimizer, epochs):
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('gcn_test.pt')
+    model.save('gcn_test2.pt')
     return train_losses, test_losses
 
 def molecules_to_tensors(molecules, device):
@@ -335,9 +370,9 @@ def plot_losses(train_losses, test_losses):
     plt.plot(test_losses,  label='Test Loss for energy')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('MLP test Training (LJÔÇæH2O/HF for energy)')
+    plt.title('MLP test Training (LJ H2O/HF for energy)')
     plt.legend()
-    plt.savefig('gcn_test.png', dpi=150, bbox_inches='tight')
+    plt.savefig('gcn_test2.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 def collate_fn(batch):
@@ -355,7 +390,7 @@ def collate_fn(batch):
 
 def main():
     mol_filename = 'training_set.xyz'
-    model_filename = 'gcn_test.pt'
+    model_filename = 'gcn_test2.pt'
 
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
@@ -382,15 +417,17 @@ def main():
         dataset,
         batch_size=32,
         collate_fn=collate_fn,
-        shuffle=True,
-        num_workers=0
+        shuffle=False,
+        num_workers=0,
+        sampler=SubsetRandomSampler(train_idx)
     )
-    test_loader  = DataLoader(
+    test_loader = DataLoader(
         dataset,
         batch_size=32,
         collate_fn=collate_fn,
         shuffle=False,
-        num_workers=0
+        num_workers=0,
+        sampler=SubsetRandomSampler(test_idx)
     )
 
     print("Loading/generating model")
@@ -409,12 +446,14 @@ def main():
     train_losses, test_losses = train_model(model, train_loader, test_loader, optimizer, epochs)
     plot_losses(train_losses, test_losses)
 
-    # 5. SingleÔÇæmolecule test (H2O equilibrium)
+    # 5. Single molecule test (H2O equilibrium)
     pos_test = np.array([[0.,0.,0.],
                          [0.96,0.,0.],
                          [-0.48,0.83,0.]])
     els = ['O','H','H']
     target_E = lj_potential(pos_test, 0.1)
+
+
   
 
     node_feats = np.array([log_primes[el] for el in els])[:, None]
@@ -431,7 +470,7 @@ def main():
     total_E_np = total_E_pred.cpu().item()
    
 
-    print("\n=== SingleÔÇæmolecule test (H2O, equilibrium) ===")
+    print("\n=== Single molecule test (H2O, equilibrium) ===")
     print(f"Target total energy (LJ):        {target_E:.6f}")
     print(f"Model total energy:              {total_E_np:.6f}")
    
