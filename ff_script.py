@@ -9,8 +9,8 @@ import matplotlib.pyplot as plt
 import os
 
 # for message passing
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
+#import torch.nn.functional as F
+#from torch_geometric.nn import GCNConv
 
 """
 WedgeForceField:
@@ -27,7 +27,7 @@ device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
 
-# PRIME ENCODING, labelling elements. NODE FEATURES
+# PRIME ENCODING, labelling elements
 prime_assign = {'H': 2, 'O': 7, 'F': 11, 'N': 13, 'C': 17}
 log_primes = {el: np.log(p) for el, p in prime_assign.items()}
 
@@ -163,12 +163,7 @@ class WedgeMLP(nn.Module):
         torch.save(self.state_dict(), filename)
         print(f"Model saved to {filename}") 
 
-# GRAPH NN MODEL -------------------------------
-# 1. get node features
-# 2. get edge features 
-# 3. get triplet features
 
-# 4. create pytorch geometric data object
 
 # DATASET GENERATION
 def generate_molecules(n_h2o=4000, n_hf=1500, filename='training_set.xyz'):
@@ -261,6 +256,8 @@ def molecules_to_tensors(molecules, device):
         targets_E.append(E_total)
 
     return samples, targets_E
+
+
 
 
 # DATASET CLASS + COLLATE
