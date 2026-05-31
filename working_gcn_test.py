@@ -204,10 +204,10 @@ class MLP(nn.Module):
     def __init__(self):
         super().__init__()
 
-        self.GCN = SimpleGCN(input_dim=2, hidden_dim=4, output_dim=2)
+        self.GCN = SimpleGCN(input_dim=1, hidden_dim=4, output_dim=2)
 
         self.node_net = nn.Sequential(
-            nn.Linear(2, 16), nn.LeakyReLU(), 
+            nn.Linear(1+2, 16), nn.LeakyReLU(), 
             nn.Linear(16, 8), nn.LeakyReLU(), 
             nn.Linear(8, 1)
         )
@@ -440,8 +440,10 @@ def main():
         print("Training new model...")
 
     lr = 1e-4
-    epochs = 40
+    epochs = 10
     print("Learning rate:", lr)
+    print(model.GCN.conv1)
+    print(model.GCN.conv2)
     optimizer = optim.Adam(model.parameters(), lr)
     train_losses, test_losses = train_model(model, train_loader, test_loader, optimizer, epochs)
     plot_losses(train_losses, test_losses)
