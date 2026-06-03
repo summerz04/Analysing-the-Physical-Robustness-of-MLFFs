@@ -90,20 +90,27 @@ class WedgeMLP(nn.Module):
         super().__init__()
 
         self.node_net = nn.Sequential(
-            nn.Linear(1, 16), nn.LeakyReLU(), 
-            nn.Linear(16, 8), nn.LeakyReLU(), 
-            nn.Linear(8,4), nn.LeakyReLU(), nn.Linear(4,1)
+            nn.Linear(1, 8), nn.LeakyReLU(), 
+            nn.Linear(8,8), nn.LeakyReLU(), 
+            nn.Linear(8,16), nn.LeakyReLU(),
+             nn.Linear(16,8), nn.LeakyReLU(),
+             nn.Linear(8,8), nn.LeakyReLU(),
+             nn.Linear(8,1)
         )
         self.edge_net = nn.Sequential(
-            nn.Linear(2, 64), nn.LeakyReLU(), 
-            nn.Linear(64, 32), nn.LeakyReLU(), 
-            nn.Linear(32, 16), nn.LeakyReLU(), 
-            nn.Linear(16,4), nn.LeakyReLU(), nn.Linear(4,1)
+            nn.Linear(2, 8), nn.LeakyReLU(), 
+            nn.Linear(8,8), nn.LeakyReLU(), 
+            nn.Linear(8,16), nn.LeakyReLU(),
+             nn.Linear(16,8), nn.LeakyReLU(),
+             nn.Linear(8,8), nn.LeakyReLU(),
+             nn.Linear(8,1)
         )
         self.triplet_net = nn.Sequential(
-            nn.Linear(1, 16), nn.LeakyReLU(), 
-            nn.Linear(16, 8), nn.LeakyReLU(), 
-            nn.Linear(8,4), nn.LeakyReLU(), nn.Linear(4,1)
+            nn.Linear(1,8), nn.LeakyReLU(), 
+            nn.Linear(8,16), nn.LeakyReLU(),
+             nn.Linear(16,8), nn.LeakyReLU(),
+             nn.Linear(8,8), nn.LeakyReLU(),
+             nn.Linear(8,1)
         )
 
 
@@ -154,7 +161,7 @@ class WedgeMLP(nn.Module):
 
         return total_E, forces
     
-    def save(self, filename='wedge_model_energy.pt'):
+    def save(self, filename='model_1.pt'):
 
         torch.save(self.state_dict(), filename)
         print(f"Model saved to {filename}")
@@ -516,14 +523,14 @@ def plot_losses(train_losses, test_losses):
     plt.ylabel('Loss')
     plt.title('WedgeForceField Training (LJ‑H2O/HF for energy)')
     plt.legend()
-    plt.savefig('training_loss_energy.png', dpi=150, bbox_inches='tight')
+    plt.savefig('model_1.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 
 # MAIN EXECUTION
 def main():
     mol_filename = 'training_set.xyz'
-    model_filename = 'wedge_model_energy.pt'
+    model_filename = 'model_1.pt'
 
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
@@ -571,7 +578,7 @@ def main():
         print("Training new model...")
 
     lr = 1e-6
-    epochs = 20
+    epochs = 100
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
     train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
