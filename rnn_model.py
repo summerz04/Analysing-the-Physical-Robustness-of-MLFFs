@@ -99,9 +99,12 @@ class RNNModel(nn.Module):
         self.to(device)
 
     def forward_energy(self, edge_feats):
+
+        
         """x: input with shape (batch_size, seq_length, input_size)"""
         # rnn returns output and h_n
         x = edge_feats.unsqueeze(0)
+        
         rnn_out, h_n = self.edge_rnn(x)
         # take the last output from the last timestep
         last_output = rnn_out[:, -1, :] # shape is (batch_size, hidden_size)
@@ -111,7 +114,7 @@ class RNNModel(nn.Module):
         return output.squeeze()
 
     def energy_per_atom(self, node_feats, edge_feats, triplets):
-        total_E = self.forward_energy(node_feats)
+        total_E = self.forward_energy(edge_feats)
         N = node_feats.size(0)
         return total_E / N
 
@@ -219,8 +222,6 @@ def molecules_to_tensors(molecules, device):
         # 2. Edge features
         if N >= 2:
             edge_feats = get_edge_features(els, pos)
-            if len(edge_feats) == 2:
-                edge_feats = edge_feats.reshape(1, 2)
             if edge_feats.ndim == 1:
                 edge_feats = np.zeros((0, 2))
         else:
@@ -559,7 +560,7 @@ def main():
 
     print("Loading/generating model")
     # 4. Initialize model and optimizer
-    model = RNNModel(input_size = 2, hidden_size=10, output_size=1, num_layers=2)
+    model = RNNModel(input_size = 1, hidden_size=10, output_size=1, num_layers=1)
     if os.path.exists(model_filename):
         model.load_state_dict(torch.load(model_filename, map_location=device))
         print(f"Training model loaded from {model_filename}")

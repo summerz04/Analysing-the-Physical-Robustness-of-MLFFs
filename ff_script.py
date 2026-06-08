@@ -118,6 +118,8 @@ class WedgeMLP(nn.Module):
         self.to(device)
 
     def forward_energy(self, node_feats, edge_feats, triplets):
+        
+        
         node_E = self.node_net(node_feats).sum()
         edge_E = self.edge_net(edge_feats).sum()
         if len(triplets) > 0:
@@ -558,14 +560,16 @@ def main():
         batch_size=32,
         collate_fn=collate_fn,
         shuffle=True,
-        num_workers=0
+        num_workers=0,
+        sampler=SubsetRandomSampler(train_idx)
     )
     test_loader  = DataLoader(
         dataset,
         batch_size=32,
         collate_fn=collate_fn,
         shuffle=False,
-        num_workers=0
+        num_workers=0,
+        sampler=SubsetRandomSampler(test_idx)
     )
 
     print("Loading/generating model")
