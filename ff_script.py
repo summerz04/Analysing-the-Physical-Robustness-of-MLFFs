@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
 import torch.autograd
@@ -7,7 +8,9 @@ import numpy as np
 from scipy.spatial.distance import pdist, squareform
 import matplotlib.pyplot as plt
 import os
-
+import torch.optim as optim 
+import torch.optim.lr_scheduler as lr_scheduler 
+import math 
 
 """
 WedgeForceField:
@@ -79,50 +82,91 @@ def lj_forces(pos, epsilon=0.1, scale=0.1):
                            - lj_potential(pos_m, epsilon, scale)) / (2*eps)
     return forces
 
+# defining scaled dot product attention function 
+def scaled_dot_product(q, k, v, mask=None):
+    d_k = q.size()[-1]
+    # (batch, heads, seq_len, head_dim) @ (batch, heads, head_dim, seq_len) --> (batch, heads, seq_len, seq_len)
+    scaled = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(d_k)
+    if mask is not None:
+        scaled += mask
+    attention = F.softmax(scaled, dim=-1) # converts scores to probabilities
 
-# MODEL: energy + per‑atom forces
-class WedgeMLP(nn.Module):
-    """
-    forward_energy: scalar E_total.
-    energy_and_forces: (E_total, forces) with forces = -∇E w.r.t. pos_t.
-    """
-    def __init__(self):
+    # (batch, heads, seq_len, seq_len) @ (batch, heads, seq_len, head_dim) --> (batch, heads, seq_len, head_dim)
+    values = torch.matmul(attention, v)
+    return values, attention
+
+# multi head attention class 
+class MultiHeadAttention(nn.Module):
+    def __init__(self, input_dim, d_model, num_heads):
         super().__init__()
+        self.input_dim = input_dim # input embedding size
+        self.d_model = d_model # model embedding size (output of self-attention)
+        self.head_dim = d_model // num_heads # dimensionality per head
+        self.num_heads = num_heads # number of parallel attention heads
+        # For efficiency, compute Q, K, V for all heads at once with a single linear layer
+        self.qkv_layer = nn.Linear(input_dim, 3 * d_model)
+        # Final projection, combines all heads' outputs
+        self.linear_layer = nn.Linear(d_model, d_model)
 
-        self.node_net = nn.Sequential(
-            nn.Linear(1, 8), nn.LeakyReLU(), 
-            nn.Linear(8,8), nn.LeakyReLU(), 
-            nn.Linear(8,16), nn.LeakyReLU(),
-             nn.Linear(16,8), nn.LeakyReLU(),
-             nn.Linear(8,8), nn.LeakyReLU(),
-             nn.Linear(8,1)
+    def forward(self, x, mask=None):
+        batch_size, sequence_length, input_dim = x.size()
+        print(f"x.size(): {x.size()}")  # Input shape
+
+        # Step 1: Project x into concatenated q, k, v for ALL heads at once
+        qkv = self.qkv_layer(x)
+        print(f"qkv.size(): {qkv.size()}")  # Shape: (batch, seq_len, 3 * d_model)
+
+        # Step 2: reshape into (batch, seq_len, num_heads, 3 * head_dim)
+        qkv = qkv.reshape(batch_size, sequence_length, self.num_heads, 3 * self.head_dim)
+        print(f"qkv.size(): {qkv.size()}")
+
+        # Step 3: Rearrange to (batch, num_heads, seq_len, 3 * head_dim)
+        qkv = qkv.permute(0, 2, 1, 3)
+        print(f"qkv.size(): {qkv.size()}")
+
+        # Step 4: Split the last dimension into q, k, v (each get last dimension of head_dim)
+        q, k, v = qkv.chunk(3, dim=-1)  # Each: (batch, num_heads, seq_len, head_dim)
+        print(f"q size: {q.size()}, k size: {k.size()}, v size: {v.size()}")
+
+        # Step 5: Apply scaled dot product attention to get outputs (contextualized values) and attention weights
+        values, attention = scaled_dot_product(q, k, v, mask)
+        print(f"values.size(): {values.size()}, attention.size: {attention.size()}")
+
+        # Step 6: Merge the heads (permute before reshape)
+        values = values.permute(0, 2, 1, 3)   # (batch, seq_len, heads, head_dim)
+        values = values.reshape(batch_size, sequence_length, self.num_heads * self.head_dim)
+        print(f"values.size(): {values.size()}")
+
+        # Step 7: Final linear projection to match d_model
+        out = self.linear_layer(values)
+        print(f"out.size(): {out.size()}")
+        return out
+    
+class AtttentionModel(nn.Module):
+    def __init__(self, node_dim=1, edge_dim=2, trip_dim=1, d_model=64, num_heads=4):
+        # embedding features to get same dimensions
+        super().__init__()
+        self.node_embed = nn.Linear(node_dim,d_model)
+        self.edge_embed = nn.Linear(edge_dim,d_model)
+        self.trip_embed = nn.Linear(trip_dim,d_model)
+        
+    
+        self.attention = MultiHeadAttention(d_model, d_model, num_heads )
+
+        self.energy_contribution = nn.Sequential(
+            nn.Linear(d_model, 32),
+            nn.LeakyReLU(),
+            nn.Linear(32,1)
         )
-        self.edge_net = nn.Sequential(
-            nn.Linear(2, 8), nn.LeakyReLU(), 
-            nn.Linear(8,8), nn.LeakyReLU(), 
-            nn.Linear(8,16), nn.LeakyReLU(),
-             nn.Linear(16,8), nn.LeakyReLU(),
-             nn.Linear(8,8), nn.LeakyReLU(),
-             nn.Linear(8,1)
-        )
-        self.triplet_net = nn.Sequential(
-            nn.Linear(1,8), nn.LeakyReLU(), 
-            nn.Linear(8,16), nn.LeakyReLU(),
-             nn.Linear(16,8), nn.LeakyReLU(),
-             nn.Linear(8,8), nn.LeakyReLU(),
-             nn.Linear(8,1)
-        )
-
-
-
-        self.to(device)
-
     def forward_energy(self, node_feats, edge_feats, triplets):
-        node_E = self.node_net(node_feats).sum()
-        edge_E = self.edge_net(edge_feats).sum()
-        if len(triplets) > 0:
-            edge_E = edge_E + self.triplet_net(triplets).sum()
-        return node_E + edge_E
+
+
+        node_E = self.energy_contribution(self.node_embed(node_feats)).sum()
+        edge_E = self.energy_contribution(self.edge_embed(edge_feats)).sum() if edge_feats.size(0) > 0 else 0.0
+        trip_E = self.energy_contribution(self.trip_embed(triplets)).sum() if triplets.size(0) > 0 else 0.0
+
+        
+        return node_E + edge_E + trip_E
 
     def energy_per_atom(self, node_feats, edge_feats, triplets):
         total_E = self.forward_energy(node_feats, edge_feats, triplets)
@@ -161,7 +205,7 @@ class WedgeMLP(nn.Module):
 
         return total_E, forces
     
-    def save(self, filename='model_1.pt'):
+    def save(self, filename='mha_model.pt'):
 
         torch.save(self.state_dict(), filename)
         print(f"Model saved to {filename}")
@@ -394,6 +438,10 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
             optimizer.step()
             epoch_loss += total_loss
 
+        before_lr = optimizer.param_groups[0]['lr']
+        scheduler.step()
+        bafter_lr = optimizer.param_groups[0]['lr']
+
         avg_epoch_loss = epoch_loss / len(train_loader)
         print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
         train_losses.append(avg_epoch_loss.detach().numpy())
@@ -433,7 +481,7 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('wedge_model_energy.pt')
+    model.save('mha_model.pt')
     return train_losses, test_losses
 
 # 
@@ -510,7 +558,7 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('wedge_model_energy.pt')
+    model.save('mha_model.pt')
     return train_losses, test_losses
 
 
@@ -521,16 +569,16 @@ def plot_losses(train_losses, test_losses):
     plt.plot(test_losses,  label='Test Loss for energy')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('WedgeForceField Training (LJ‑H2O/HF for energy)')
+    plt.title('MHA Training (LJ‑H2O/HF for energy)')
     plt.legend()
-    plt.savefig('model_1.png', dpi=150, bbox_inches='tight')
+    plt.savefig('mha_model.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 
 # MAIN EXECUTION
 def main():
     mol_filename = 'training_set.xyz'
-    model_filename = 'model_1.pt'
+    model_filename = 'mha_model.pt'
 
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
@@ -570,7 +618,8 @@ def main():
 
     print("Loading/generating model")
     # 4. Initialize model and optimizer
-    model = WedgeMLP()
+    
+    model = AtttentionModel(node_dim=1, edge_dim=2, trip_dim=1, d_model=64, num_heads=4)
     if os.path.exists(model_filename):
         model.load_state_dict(torch.load(model_filename, map_location=device))
         print(f"Training model loaded from {model_filename}")
@@ -581,6 +630,8 @@ def main():
     epochs = 100
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
+    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.5, total_iters=30)
+    
     train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
     plot_losses(train_losses, test_losses)
 
@@ -608,7 +659,7 @@ def main():
 
     model.eval()
     with torch.no_grad():
-        total_E_pred = model.forward_energy(node_t, edge_t, trip_t)
+        total_E_pred = model.forward(node_t, edge_t, trip_t)
         E_per_atom_pred = model.energy_per_atom(node_t, edge_t, trip_t)
         total_E_actual, forces_pred = model.energy_and_forces(node_t, edge_t, trip_t, pos_t)
 
