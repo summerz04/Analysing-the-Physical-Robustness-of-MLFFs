@@ -7,6 +7,7 @@ import numpy as np
 from scipy.spatial.distance import pdist, squareform
 import matplotlib.pyplot as plt
 import os
+import torch.optim.lr_scheduler as lr_scheduler
 
 
 """
@@ -404,6 +405,9 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
             optimizer.step()
             epoch_loss += total_loss
 
+        before_lr = optimizer.param_groups[0]['lr']
+        scheduler.step()
+        after_lr = optimizer.param_groups[0]['lr']
         avg_epoch_loss = epoch_loss / len(train_loader)
         print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
         train_losses.append(avg_epoch_loss.detach().numpy())
@@ -591,6 +595,7 @@ def main():
     epochs = 100
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
+    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.5, total_iters=30)
     train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
     plot_losses(train_losses, test_losses)
 
