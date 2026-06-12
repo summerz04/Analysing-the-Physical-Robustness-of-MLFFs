@@ -7,7 +7,8 @@ import numpy as np
 from scipy.spatial.distance import pdist, squareform
 import matplotlib.pyplot as plt
 import os
-
+import torch.optim as optim 
+import torch.optim.lr_scheduler as lr_scheduler 
 
 """
 WedgeForceField:
@@ -107,8 +108,6 @@ class WedgeMLP(nn.Module):
             nn.Linear(64,4), nn.LeakyReLU(),
              nn.Linear(4,1)
         )
-
-
 
         self.to(device)
 
@@ -389,6 +388,9 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
             optimizer.step()
             epoch_loss += total_loss
 
+        before_lr = optimizer.param_groups[0]['lr']
+        scheduler.step()
+        after_lr = optimizer.param_groups[0]['lr']
         avg_epoch_loss = epoch_loss / len(train_loader)
         print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
         train_losses.append(avg_epoch_loss.detach().numpy())
@@ -428,7 +430,7 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('model_dropout.pt')
+    model.save('model_2.pt')
     return train_losses, test_losses
 
 # 
@@ -471,9 +473,10 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
             total_loss.backward()
             optimizer.step()
             epoch_loss += total_loss
-
+        
         avg_epoch_loss = epoch_loss / len(train_loader)
         print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
+        
         train_losses.append(avg_epoch_loss.detach().numpy())
         last_epoch_loss = avg_epoch_loss
 
@@ -505,7 +508,7 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('model_dropout.pt')
+    model.save('model_2.pt')
     return train_losses, test_losses
 
 
@@ -525,7 +528,7 @@ def plot_losses(train_losses, test_losses):
 # MAIN EXECUTION
 def main():
     mol_filename = 'training_set.xyz'
-    model_filename = 'model_dropout.pt'
+    model_filename = 'model_2.pt'
 
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
@@ -572,14 +575,19 @@ def main():
     else:
         print("Training new model...")
 
-    lr = 1e-6
+    # learning scehduler 
+
+    
     epochs = 100
-    print("Learning rate:", lr)
+    #print("Learning rate:", lr)
+    lr = 1e-4
+    
     optimizer = optim.Adam(model.parameters(), lr)
+    scheduler = lr_scheduler.LinearLR(optimizer, start_factor = 1.0, end_factor=0.5, total_iters=30)
     train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
     plot_losses(train_losses, test_losses)
 
-    # 5. Single‑molecule test (H2O equilibrium)
+    # 5. Single‑molecule test (H2O equilexce,ibrium)
     pos_test = np.array([[0.,0.,0.],
                          [0.96,0.,0.],
                          [-0.48,0.83,0.]])
