@@ -211,7 +211,7 @@ class MoleculeMessagePassing(MessagePassing):
         )
 
         # 3. update node representations 
-        self.update = nn.Sequential(
+        self.update_mlp = nn.Sequential(
             nn.Linear(node_dim + hidden_dim, hidden_dim),
             nn.SiLU(),
             nn.Linear(hidden_dim, out_dim)
@@ -228,8 +228,8 @@ class MoleculeMessagePassing(MessagePassing):
         return self.message_pass(torch.cat([x_j, edge_emb], dim=-1))
     
     # return node representations after aggregation
-    def update_net(self, aggregated_out, x):
-        return x + self.update_net(torch.cat([x, aggregated_out], dim=-1))
+    def update(self, aggregated_out, x):
+        return x + self.update_mlp(torch.cat([x, aggregated_out], dim=-1))
 
 # Linear MLP MODEL: energy + per atom forces
 class MLP(nn.Module):
@@ -244,8 +244,10 @@ class MLP(nn.Module):
                                         out_dim=1)
 
         self.node_net = nn.Sequential(
-            nn.Linear(5, 16), nn.LeakyReLU(), 
+            nn.Linear(2, 16), nn.LeakyReLU(), 
+            nn.Dropout(0.5),
             nn.Linear(16, 8), nn.LeakyReLU(), 
+            nn.Dropout(0.5),
             nn.Linear(8, 1)
         )
        
@@ -410,9 +412,9 @@ def plot_losses(train_losses, test_losses):
     plt.plot(test_losses,  label='Test Loss for energy')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
-    plt.title('MLP test Training (LJ H2O/HF for energy)')
+    plt.title('GNN with edge attributes training (LJ H2O/HF for energy)')
     plt.legend()
-    plt.savefig('gcn_test2.png', dpi=150, bbox_inches='tight')
+    plt.savefig('edge_attr.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 def collate_fn(batch):
@@ -495,7 +497,6 @@ def main():
     target_E = lj_potential(pos_test, 0.1)
 
 
-  
 
     node_feats = np.array([log_primes[el] for el in els])[:, None]
     node_t = torch.tensor(node_feats, dtype=torch.float32, device=device)
