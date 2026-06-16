@@ -3,25 +3,16 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
-import torch.autograd
+
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
 import matplotlib.pyplot as plt
 import os
 
-from typing import Optional
-import torch.nn.functional as F
-from torch_geometric.nn import GCNConv
-from torch_geometric.data import Data
-
-from torch import Tensor
-from torch.nn import Linear, Parameter
-from torch_geometric.nn import MessagePassing
-from torch_geometric.utils import add_self_loops, degree, to_edge_index
-from torch_geometric.data import Data
-
 from sklearn.kernel_ridge import KernelRidge
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import mean_squared_error
 
 # Device selection
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -32,7 +23,7 @@ print(f"Using device: {device}")
 prime_assign = {'H': 2, 'O': 7, 'F': 11, 'N': 13, 'C': 17}
 log_primes = {el: np.log(p) for el, p in prime_assign.items()}
 
-def generate_molecules(n_h2o=500, filename='water_set.xyz'):
+def generate_molecules(n_h2o=1000, filename='water_set_1000.xyz'):
     """
     Returns [(pos, elements, E_total, F_atom)].
     Also writes filename as XYZ file.
@@ -56,7 +47,7 @@ def generate_molecules(n_h2o=500, filename='water_set.xyz'):
         pos = np.vstack([O, H1, H2]) + 0.03*np.random.randn(3, 3)
         E_total = lj_potential(pos, 0.1)
         F_atom = lj_forces(pos, 0.1)
-        molecules.append((['O','H','H'], E_total, F_atom))
+        molecules.append((pos, ['O','H','H'], E_total, F_atom))
 
         # append positions to get list of positions of atom per molecule
         positions.append(pos)
@@ -96,7 +87,7 @@ def interatomic_dist(positions):
 
     return dists
 
-def load_molecules_from_xyz(filename='water_set.xyz'):
+def load_molecules_from_xyz(filename='water_set_1000.xyz'):
     """
     Parse training_set.xyz → (pos, elements, E_total, F_atom).
     Recompute LJ energy; ignore E= from file.
@@ -225,16 +216,6 @@ class EnergyDataset(Dataset):
     def __getitem__(self, idx):
         return self.samples[idx]
 
-def plot_losses(train_losses, test_losses):
-    plt.figure(figsize=(10, 4))
-    plt.plot(train_losses, label='Train Loss for energy')
-    plt.plot(test_losses,  label='Test Loss for energy')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title('MLP test Training (LJ‑H2O/HF for energy)')
-    plt.legend()
-    plt.savefig('gcn_test.png', dpi=150, bbox_inches='tight')
-    plt.close()
 
 def collate_fn(batch):
     """
@@ -249,21 +230,38 @@ def collate_fn(batch):
     return (node_batch,  pos_batch,
             E_total_batch, N_batch)
 
-def plot_energies(energy_per_molecule):
+def plot_pred_vs_targ(y_test, y_pred):
+    sort_idx = np.argsort(y_test.ravel())
+    y_test_sorted = np.array(y_test).ravel()[sort_idx]
+    y_pred_sorted = np.array(y_pred).ravel()[sort_idx]
+    
     plt.figure(figsize=(10, 4))
-    plt.plot(energy_per_molecule)
-    plt.xlabel('Number of molecules')
-    plt.ylabel('Energy / kL/mol')
-    plt.title('LJ energy per molecule')
+    plt.scatter(y_test_sorted, y_pred_sorted, s=5, alpha=0.5)
+    plt.plot([y_test_sorted.min(), y_test_sorted.max()],
+             [y_test_sorted.min(), y_test_sorted.max()], 'r--')
+    plt.xlabel('Target Energy')
+    plt.ylabel('Predicted Energy')
+    plt.title('KRR: Predicted vs Target Energy')
     plt.legend()
-    plt.savefig('molecule_energy.png', dpi=150, bbox_inches='tight')
+    plt.savefig('PredictedVSTarget.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+def plot_reg(y_test, y_pred):
+    plt.figure(figsize=(10,4))
+    plt.plot(y_test, color='green', label='Target Energy')
+    plt.plot(y_pred, color='red', label='Predicted Energy')
+    plt.ylabel('Energy / kJ/mol')
+    plt.xlabel('Molecule')
+    plt.title('KRR: Regression Plot')
+    plt.legend()
+    plt.savefig('RegressionPlot.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 
 
 def main():
     # plot energies per molecule
-    mol_filename = 'water_set.xyz'
+    mol_filename = 'water_set_1000.xyz'
 
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
@@ -271,7 +269,7 @@ def main():
         molecules, position_list = load_molecules_from_xyz(mol_filename)
     else:
         print(f"Generating new training data...")
-        molecules, position_list = generate_molecules(n_h2o=500, filename=mol_filename)
+        molecules, position_list = generate_molecules(n_h2o=1000, filename=mol_filename)
         
     # 2. Convert to tensors
     print("Converting to tensors...")
@@ -282,48 +280,73 @@ def main():
 
     molecule_repr = np.array([])
     pos_repr = interatomic_dist(position_list)
-    node_repr = np.array([])
-    for molecules in molecules: 
-        node_repr = np.append(node_repr, node_t)
 
+    # collecting node representations and converting to array
+    node_repr = []
+    for pos, els, E_total, F_atom in molecules: 
+        row = np.array([log_primes[el] for el in els])
+        node_repr.append(row)
 
+    node_repr = np.array(node_repr)
     # Debugging, checking shapes of representations for concatenation
+   
     print(f'Shape of node representation: {node_repr.shape}')
     print(f'Shape of position representation: {pos_repr.shape}')
+    
     molecule_repr = np.hstack((node_repr, pos_repr))
   
-    #debugging, seeing shape of represnetiation 
+    # debugging, seeing shape of represnetiation 
     print(f'Shape of representation is {(molecule_repr.shape)}')
     print(f'First node feature: {molecule_repr[0][0]}')
 
     
-    plot_energies(energy_per_molecule)
 
-    # 3. # 3. Create Dataset + train/test split (80/20)
-    dataset = EnergyDataset(samples, energy_per_molecule)
-    N = len(dataset)
+    # Add target energies to end of representations 
+    print(f'Shape of target energies: {len(targets_E)}')
+    
+    dataset = np.hstack((molecule_repr, np.array(targets_E).reshape(1000,1)))
+    target_energies = np.array(targets_E).reshape(1000,1)
+    print(f'Shape of final dataset: {dataset.shape}')
     
     # in training set : 80 % feature representation and calculated lj energies
-    # in testing set : 20 % feature representation and calculated lj energies
     
+    # in testing set : 20 % feature representation and calculated lj energies
+    X_train, X_test, y_train, y_test = train_test_split(molecule_repr, target_energies, test_size=0.2, random_state=42)
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
 
-    print("Loading/generating model")
+    print("Generating kernel ridge regression model")
     # 4. Initialize model and optimizer
     model = KernelRidge(alpha=0.1, kernel='laplacian', gamma=0.1)
     
-    # fit model to training set
+    # 5. Fit model to training set
+    model.fit(X_train, y_train)
 
-    # make predictions of energy using model 
+    # 6. Make predictions of energy using model 
+    y_pred = model.predict(X_test)
 
-    # evaluate model 
+    # 7. Evaluate model 
+    mse = mean_squared_error(y_test, y_pred)
+    print(f'Mean squared error of KRR: {mse}')
 
-    # 5. Single‑molecule test (H2O equilibrium)
+    # 8. Single‑molecule test (H2O equilibrium)
     pos_test = np.array([[0.,0.,0.],
                          [0.96,0.,0.],
                          [-0.48,0.83,0.]])
+    
     els = ['O','H','H']
+    pos_test_repr = np.array([[np.linalg.norm(pos_test[0] - pos_test[1]),
+                            np.linalg.norm(pos_test[0] - pos_test[2])]])
+    node_test_repr = np.array([[log_primes[el] for el in els]])
+    test_feat = np.hstack((node_test_repr, pos_test_repr))
+
+    total_E_np = float(model.predict(test_feat).flatten()[0])
     target_E = lj_potential(pos_test, 0.1)
-  
+    print(f'total_e_np is: {total_E_np}')
+
+    plot_pred_vs_targ(y_test, y_pred)
+    plot_reg(y_test, y_pred)
 
     node_feats = np.array([log_primes[el] for el in els])[:, None]
     node_t = torch.tensor(node_feats, dtype=torch.float32, device=device)
