@@ -79,8 +79,7 @@ def lj_forces(pos, epsilon=0.1, scale=0.1):
                            - lj_potential(pos_m, epsilon, scale)) / (2*eps)
     return forces
 
-
-# MODEL: energy + per‑atom forces
+# ------------------------------------------- mlp model 1 -----------------------------------------
 class WedgeMLP(nn.Module):
     """
     forward_energy: scalar E_total.
@@ -90,27 +89,22 @@ class WedgeMLP(nn.Module):
         super().__init__()
 
         self.node_net = nn.Sequential(
-            nn.Linear(1, 8), nn.LeakyReLU(), 
-            nn.Linear(8,8), nn.LeakyReLU(), 
-            nn.Linear(8,16), nn.LeakyReLU(),
-             nn.Linear(16,8), nn.LeakyReLU(),
-             nn.Linear(8,8), nn.LeakyReLU(),
-             nn.Linear(8,1)
+            nn.Linear(1, 64), nn.LeakyReLU(), 
+            nn.Linear(64,64),nn.LeakyReLU(), 
+            nn.Linear(64,4), nn.LeakyReLU(),
+             nn.Linear(4,1)
         )
         self.edge_net = nn.Sequential(
-            nn.Linear(2, 8), nn.LeakyReLU(), 
-            nn.Linear(8,8), nn.LeakyReLU(), 
-            nn.Linear(8,16), nn.LeakyReLU(),
-             nn.Linear(16,8), nn.LeakyReLU(),
-             nn.Linear(8,8), nn.LeakyReLU(),
-             nn.Linear(8,1)
+            nn.Linear(2, 64), nn.LeakyReLU(), 
+            nn.Linear(64,64), nn.LeakyReLU(), 
+            nn.Linear(64,4),nn.LeakyReLU(),
+            nn.Linear(4,1)
         )
         self.triplet_net = nn.Sequential(
-            nn.Linear(1,8), nn.LeakyReLU(), 
-            nn.Linear(8,16), nn.LeakyReLU(),
-             nn.Linear(16,8), nn.LeakyReLU(),
-             nn.Linear(8,8), nn.LeakyReLU(),
-             nn.Linear(8,1)
+            nn.Linear(1, 64), nn.LeakyReLU(), 
+            nn.Linear(64,64),nn.LeakyReLU(), 
+            nn.Linear(64,4), nn.LeakyReLU(),
+             nn.Linear(4,1)
         )
 
 
@@ -161,7 +155,251 @@ class WedgeMLP(nn.Module):
 
         return total_E, forces
     
-    def save(self, filename='model_1.pt'):
+    def save(self, filename='model_2.pt'):
+
+        torch.save(self.state_dict(), filename)
+        print(f"Model saved to {filename}")
+
+
+# ------------------------------------------- convolutional model -----------------------------------------
+class ConvNet(nn.Module):
+    """
+    forward_energy: scalar E_total.
+    energy_and_forces: (E_total, forces) with forces = -∇E w.r.t. pos_t.
+    """
+    def __init__(self):
+        super().__init__()
+
+        # node features are treated with mlp 
+        self.node_net = nn.Sequential(
+            nn.Linear(1, 8), nn.LeakyReLU(), 
+            nn.Linear(8,16),
+             
+             nn.LeakyReLU(), 
+            nn.Linear(16,8),
+            
+               nn.LeakyReLU(),
+             nn.Linear(8,4), nn.LeakyReLU(),
+             nn.Linear(4,1)
+        )
+        # edges are treated with conv layers
+        self.edge_conv = nn.Sequential(
+            nn.Conv1d(in_channels=2, out_channels=4, kernel_size=1),
+            nn.LeakyReLU(),
+            nn.Conv1d(in_channels=4, out_channels=1, kernel_size=1),
+
+        )
+        self.triplet_net = nn.Sequential(
+            nn.Linear(1, 8), nn.LeakyReLU(), 
+            nn.Linear(8,16),
+            
+               nn.LeakyReLU(), 
+            nn.Linear(16,8),
+             
+               nn.LeakyReLU(),
+             nn.Linear(8,4), nn.LeakyReLU(),
+             nn.Linear(4,1)
+        )
+
+
+
+        self.to(device)
+
+    def forward_energy(self, node_feats, edge_feats, triplets):
+        node_E = self.node_net(node_feats).sum()
+
+        e = edge_feats.T.unsqueeze(0)
+        e = self.edge_conv(e)
+        edge_E = e.sum()
+        if len(triplets) > 0:
+            edge_E = edge_E + self.triplet_net(triplets).sum()
+        return node_E + edge_E
+
+    def energy_per_atom(self, node_feats, edge_feats, triplets):
+        total_E = self.forward_energy(node_feats, edge_feats, triplets)
+        N = node_feats.size(0)
+        return total_E / N
+
+    def energy_and_forces(self, node_feats, edge_feats, triplets, pos_t):
+        """
+        pos_t: (N, 3), requires_grad=True.
+        Returns:
+            total_E: scalar
+            forces: (N, 3) = -∂E/∂pos_t
+        """
+        with torch.enable_grad():
+            total_E = self.forward_energy(node_feats, edge_feats, triplets)
+
+            # Explicitly require_grad on pos_t if it ever got detached
+            if pos_t.grad is not None:
+                pos_t.grad.zero_()
+
+            # Compute gradient
+            grad_outputs = torch.ones_like(total_E)
+            grad_list = torch.autograd.grad(
+                outputs=total_E,
+                inputs=pos_t,
+                grad_outputs=grad_outputs,
+                create_graph=False,
+                allow_unused=True
+            )
+
+            if grad_list[0] is None:
+                # Something is wrong; fall back to zeros
+                forces = torch.zeros_like(pos_t)
+            else:
+                forces = -grad_list[0]   # F = -∇E
+
+        return total_E, forces
+    
+    def save(self, filename='model_conv.pt'):
+
+        torch.save(self.state_dict(), filename)
+        print(f"Model saved to {filename}")
+
+
+
+# ------------------------------------------- multi-head attention --------------------------------
+
+class AtttentionModel(nn.Module):
+    def __init__(self, node_dim=1, edge_dim=2, trip_dim=1, d_model=64, num_heads=4):
+        # embedding features to get same dimensions
+        super().__init__()
+        self.node_embed = nn.Linear(node_dim,d_model)
+        self.edge_embed = nn.Linear(edge_dim,d_model)
+        self.trip_embed = nn.Linear(trip_dim,d_model)
+        
+    
+        self.attention = MultiHeadAttention(d_model, d_model, num_heads )
+
+        self.energy_contribution = nn.Sequential(
+            nn.Linear(d_model, 32),
+            nn.LeakyReLU(),
+            nn.Linear(32,1)
+        )
+    def forward_energy(self, node_feats, edge_feats, triplets):
+
+
+        node_E = self.energy_contribution(self.node_embed(node_feats)).sum()
+        edge_E = self.energy_contribution(self.edge_embed(edge_feats)).sum() if edge_feats.size(0) > 0 else 0.0
+        trip_E = self.energy_contribution(self.trip_embed(triplets)).sum() if triplets.size(0) > 0 else 0.0
+
+        
+        return node_E + edge_E + trip_E
+
+    def energy_per_atom(self, node_feats, edge_feats, triplets):
+        total_E = self.forward_energy(node_feats, edge_feats, triplets)
+        N = node_feats.size(0)
+        return total_E / N
+
+    def energy_and_forces(self, node_feats, edge_feats, triplets, pos_t):
+        """
+        pos_t: (N, 3), requires_grad=True.
+        Returns:
+            total_E: scalar
+            forces: (N, 3) = -∂E/∂pos_t
+        """
+        with torch.enable_grad():
+            total_E = self.forward_energy(node_feats, edge_feats, triplets)
+
+            # Explicitly require_grad on pos_t if it ever got detached
+            if pos_t.grad is not None:
+                pos_t.grad.zero_()
+
+            # Compute gradient
+            grad_outputs = torch.ones_like(total_E)
+            grad_list = torch.autograd.grad(
+                outputs=total_E,
+                inputs=pos_t,
+                grad_outputs=grad_outputs,
+                create_graph=False,
+                allow_unused=True
+            )
+
+            if grad_list[0] is None:
+                # Something is wrong; fall back to zeros
+                forces = torch.zeros_like(pos_t)
+            else:
+                forces = -grad_list[0]   # F = -∇E
+
+        return total_E, forces
+    
+    def save(self, filename='mha_model.pt'):
+
+        torch.save(self.state_dict(), filename)
+        print(f"Model saved to {filename}")
+
+# ------------------------------------------- rnn model -------------------------------------------
+class RNNModel(nn.Module):
+    """
+    forward_energy: scalar E_total.
+    energy_and_forces: (E_total, forces) with forces = -∇E w.r.t. pos_t.
+    """
+    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
+        super(RNNModel,self).__init__()
+
+        # rnn for node features first
+        self.edge_rnn = nn.RNN(input_size=input_size,
+                               hidden_size=hidden_size,
+                               num_layers=num_layers,
+                               batch_first=True)
+        
+        self.fc = nn.Linear(hidden_size, output_size)
+        self.to(device)
+
+    def forward_energy(self, edge_feats):
+
+        
+        """x: input with shape (batch_size, seq_length, input_size)"""
+        # rnn returns output and h_n
+        x = edge_feats.unsqueeze(0)
+        
+        rnn_out, h_n = self.edge_rnn(x)
+        # take the last output from the last timestep
+        last_output = rnn_out[:, -1, :] # shape is (batch_size, hidden_size)
+        
+        # pass through output layer
+        output = self.fc(last_output)
+        return output.squeeze()
+
+    def energy_per_atom(self, node_feats, edge_feats, triplets):
+        total_E = self.forward_energy(edge_feats)
+        N = node_feats.size(0)
+        return total_E / N
+
+    def energy_and_forces(self, node_feats, edge_feats, triplets, pos_t):
+        """
+        pos_t: (N, 3), requires_grad=True.
+        Returns:
+            total_E: scalar
+            forces: (N, 3) = -∂E/∂pos_t
+        """
+        with torch.enable_grad():
+            total_E = self.forward_energy(node_feats)
+
+            # Explicitly require_grad on pos_t if it ever got detached
+            if pos_t.grad is not None:
+                pos_t.grad.zero_()
+
+            # Compute gradient
+            grad_outputs = torch.ones_like(total_E)
+            grad_list = torch.autograd.grad(
+                outputs=total_E,
+                inputs=pos_t,
+                grad_outputs=grad_outputs,
+                create_graph=False,
+                allow_unused=True
+            )
+
+            if grad_list[0] is None:
+                # Something is wrong; fall back to zeros
+                forces = torch.zeros_like(pos_t)
+            else:
+                forces = -grad_list[0]   # F = -∇E
+
+        return total_E, forces
+    
+    def save(self, filename='rnn_model.pt'):
 
         torch.save(self.state_dict(), filename)
         print(f"Model saved to {filename}")
@@ -232,9 +470,7 @@ def molecules_to_tensors(molecules, device):
 
         # 2. Edge features
         if N >= 2:
-            edge_feats = get_edge_features(els, pos)[0]
-            if len(edge_feats) == 2:
-                edge_feats = edge_feats.reshape(1, 2)
+            edge_feats = get_edge_features(els, pos)
             if edge_feats.ndim == 1:
                 edge_feats = np.zeros((0, 2))
         else:
@@ -373,7 +609,7 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
                 N = N_batch[i]
 
                 # 1. Total energy loss (LJ)
-                total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                total_E_pred = model.forward_energy(node_i)
                 loss_E = (total_E_pred - E_total_tar[i])**2
                 loss_E_tot += loss_E
 
@@ -414,7 +650,7 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
                     pos_i = pos_batch[i]
                     N = N_batch[i]
 
-                    total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                    total_E_pred = model.forward_energy(node_i)
                     loss_E = (total_E_pred - E_total_tar[i])**2
 
                     total_E_actual, F_pred = model.energy_and_forces(node_i, edge_i, trip_i, pos_i)
@@ -433,7 +669,7 @@ def train_model_50_50(model, train_loader, test_loader, optimizer, epochs):
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('wedge_model_energy.pt')
+    model.save('rnn_model.pt')
     return train_losses, test_losses
 
 # 
@@ -464,7 +700,7 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
                 N = N_batch[i]
 
                 # 1. Total energy loss (LJ)
-                total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                total_E_pred = model.forward_energy(node_i)
                 loss_E = (total_E_pred - E_total_tar[i])**2
                 loss_E_tot += loss_E
 
@@ -497,7 +733,7 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
                     pos_i = pos_batch[i]
                     N = N_batch[i]
 
-                    total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                    total_E_pred = model.forward_energy(node_i)
                     loss_E = (total_E_pred - E_total_tar[i])**2
 
                     batch_loss += loss_E
@@ -510,7 +746,7 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
 
-    model.save('wedge_model_energy.pt')
+    model.save('rnn_model.pt')
     return train_losses, test_losses
 
 
@@ -523,14 +759,14 @@ def plot_losses(train_losses, test_losses):
     plt.ylabel('Loss')
     plt.title('WedgeForceField Training (LJ‑H2O/HF for energy)')
     plt.legend()
-    plt.savefig('model_1.png', dpi=150, bbox_inches='tight')
+    plt.savefig('rnn_model.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 
 # MAIN EXECUTION
 def main():
     mol_filename = 'training_set.xyz'
-    model_filename = 'model_1.pt'
+    model_filename = 'rnn_model.pt'
 
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
@@ -553,24 +789,27 @@ def main():
     train_idx = indices[:train_size]
     test_idx  = indices[train_size:]
 
+    
     train_loader = DataLoader(
         dataset,
         batch_size=32,
         collate_fn=collate_fn,
-        shuffle=True,
-        num_workers=0
+        shuffle=False,
+        num_workers=0,
+        sampler=SubsetRandomSampler(train_idx)
     )
     test_loader  = DataLoader(
         dataset,
         batch_size=32,
         collate_fn=collate_fn,
         shuffle=False,
-        num_workers=0
+        num_workers=0,
+        sampler=SubsetRandomSampler(test_idx)
     )
 
     print("Loading/generating model")
     # 4. Initialize model and optimizer
-    model = WedgeMLP()
+    model = RNNModel(input_size = 1, hidden_size=10, output_size=1, num_layers=1)
     if os.path.exists(model_filename):
         model.load_state_dict(torch.load(model_filename, map_location=device))
         print(f"Training model loaded from {model_filename}")
@@ -608,7 +847,7 @@ def main():
 
     model.eval()
     with torch.no_grad():
-        total_E_pred = model.forward_energy(node_t, edge_t, trip_t)
+        total_E_pred = model.forward_energy(node_t)
         E_per_atom_pred = model.energy_per_atom(node_t, edge_t, trip_t)
         total_E_actual, forces_pred = model.energy_and_forces(node_t, edge_t, trip_t, pos_t)
 
@@ -631,6 +870,187 @@ def main():
 
     F_rmse = np.sqrt(((forces_np - target_F)**2).mean())
     print(f"\nForce RMSE (per‑atom): {F_rmse:.6f}")
+
+    # ------------------------------------------- model wrapper -------------------------------------------
+
+class ModelWrapper:
+    """Normalises the different forward_energy signatures into one interface."""
+    def __init__(self, model, name):
+        self.model = model
+        self.name = name
+
+    def forward_energy(self, node_i, edge_i, trip_i):
+        if isinstance(self.model, RNNModel):
+            return self.model.forward_energy(edge_i)
+        else:
+            return self.model.forward_energy(node_i, edge_i, trip_i)
+
+    def energy_and_forces(self, node_i, edge_i, trip_i, pos_i):
+        if isinstance(self.model, RNNModel):
+            # RNNModel.energy_and_forces has a bug (passes node_i not edge_i),
+            # so we call forward_energy manually here
+            with torch.enable_grad():
+                total_E = self.model.forward_energy(edge_i)
+                grad_list = torch.autograd.grad(
+                    outputs=total_E,
+                    inputs=pos_i,
+                    grad_outputs=torch.ones_like(total_E),
+                    create_graph=False,
+                    allow_unused=True
+                )
+                forces = -grad_list[0] if grad_list[0] is not None else torch.zeros_like(pos_i)
+            return total_E, forces
+        else:
+            return self.model.energy_and_forces(node_i, edge_i, trip_i, pos_i)
+
+    def train(self): self.model.train()
+    def eval(self):  self.model.eval()
+    def parameters(self): return self.model.parameters()
+    def save(self, filename): self.model.save(filename)
+
+
+# ------------------------------------------- unified training loop -------------------------------------------
+
+def train_one_model(wrapper, train_loader, test_loader, optimizer, epochs):
+    train_losses, test_losses = [], []
+
+    for epoch in range(epochs):
+        wrapper.train()
+        epoch_loss = 0.0
+
+        for (node_batch, edge_batch, triplet_batch, pos_batch,
+             E_total_tar, F_tar, N_batch) in train_loader:
+
+            batch_size = len(E_total_tar)
+            optimizer.zero_grad()
+            loss_E_tot = 0.0
+
+            for i in range(batch_size):
+                node_i = node_batch[i]
+                edge_i = edge_batch[i]
+                trip_i = triplet_batch[i]
+
+                E_pred = wrapper.forward_energy(node_i, edge_i, trip_i)
+                loss_E_tot += (E_pred - E_total_tar[i]) ** 2
+
+            total_loss = loss_E_tot / batch_size
+            total_loss.backward()
+            optimizer.step()
+            epoch_loss += total_loss.item()
+
+        avg_train = epoch_loss / len(train_loader)
+        train_losses.append(avg_train)
+
+        wrapper.eval()
+        test_loss = 0.0
+        with torch.no_grad():
+            for (node_batch, edge_batch, triplet_batch, pos_batch,
+                 E_total_tar, F_tar, N_batch) in test_loader:
+                batch_size = len(E_total_tar)
+                batch_loss = 0.0
+                for i in range(batch_size):
+                    E_pred = wrapper.forward_energy(node_batch[i], edge_batch[i], triplet_batch[i])
+                    batch_loss += (E_pred - E_total_tar[i]).item() ** 2
+                test_loss += batch_loss / batch_size
+
+        avg_test = test_loss / len(test_loader)
+        test_losses.append(avg_test)
+
+        if epoch % 10 == 0:
+            print(f"  [{wrapper.name}] Epoch {epoch:3d}: train={avg_train:.5f}  test={avg_test:.5f}")
+
+    return train_losses, test_losses
+
+
+# ------------------------------------------- comparison plot -------------------------------------------
+
+def plot_all_losses(results: dict, filename='model_comparison.png'):
+    """
+    results: { model_name: {'train': [...], 'test': [...]} }
+    Produces a 1x2 subplot: train curves | test curves, all models overlaid.
+    """
+    colours = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    fig, axes = plt.subplots(1, 2, figsize=(12, 5), sharey=False)
+
+    for idx, (name, curves) in enumerate(results.items()):
+        c = colours[idx % len(colours)]
+        epochs = range(len(curves['train']))
+        axes[0].plot(epochs, curves['train'], label=name, color=c)
+        axes[1].plot(epochs, curves['test'],  label=name, color=c)
+
+    for ax, title in zip(axes, ['Training Loss', 'Test Loss']):
+        ax.set_xlabel('Epoch')
+        ax.set_ylabel('Loss')
+        ax.set_title(title)
+        ax.legend()
+        ax.grid(True, linewidth=0.5, alpha=0.5)
+        ax.set_yscale('log')   # log scale makes it much easier to compare magnitudes
+
+    plt.suptitle('Model Comparison — LJ H₂O/HF')
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150, bbox_inches='tight')
+    plt.close()
+    print(f"Comparison plot saved to {filename}")
+
+
+# ------------------------------------------- updated main -------------------------------------------
+
+def main_old():
+    mol_filename   = 'training_set.xyz'
+    epochs         = 100
+    lr             = 1e-4
+
+    # 1. Data
+    if os.path.exists(mol_filename):
+        molecules = load_molecules_from_xyz(mol_filename)
+    else:
+        molecules = generate_molecules(n_h2o=4000, n_hf=1500, filename=mol_filename)
+
+    samples, _ = molecules_to_tensors(molecules, device)
+    dataset = EnergyDataset(samples)
+    N = len(dataset)
+    indices    = torch.randperm(N)
+    train_size = int(0.8 * N)
+    train_idx  = indices[:train_size]
+    test_idx   = indices[train_size:]
+
+    def make_loaders():
+        train_loader = DataLoader(dataset, batch_size=32, collate_fn=collate_fn,
+                                  shuffle=False, num_workers=0,
+                                  sampler=SubsetRandomSampler(train_idx))
+        test_loader  = DataLoader(dataset, batch_size=32, collate_fn=collate_fn,
+                                  shuffle=False, num_workers=0,
+                                  sampler=SubsetRandomSampler(test_idx))
+        return train_loader, test_loader
+
+    # 2. Define all models to compare
+    models_to_compare = [
+        ModelWrapper(WedgeMLP(),  'WedgeMLP'),
+        ModelWrapper(ConvNet(),   'ConvNet'),
+        ModelWrapper(RNNModel(input_size=2, hidden_size=32, output_size=1), 'RNN'),
+        # AtttentionModel needs MultiHeadAttention defined — add once that class is available:
+        # ModelWrapper(AtttentionModel(), 'Attention'),
+    ]
+
+    # 3. Train each model, collect results
+    results = {}
+    for wrapper in models_to_compare:
+        print(f"\n{'='*50}\nTraining {wrapper.name}\n{'='*50}")
+        train_loader, test_loader = make_loaders()
+        optimizer = optim.Adam(wrapper.parameters(), lr=lr)
+        train_l, test_l = train_one_model(
+            wrapper, train_loader, test_loader, optimizer,
+            epochs=epochs, mode='50_50'
+        )
+        results[wrapper.name] = {'train': train_l, 'test': test_l}
+        wrapper.save(f'{wrapper.name.lower()}_model.pt')
+
+    # 4. Plot everything together
+    plot_all_losses(results, filename='model_comparison.png')
+
+
+if __name__ == '__main__':
+    main()
 
 
 if __name__ == "__main__":
