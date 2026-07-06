@@ -752,7 +752,7 @@ def main():
     print("Loading/generating model")
     # 4. Initialize model and optimizer
 
-    models = [MLP1(), MLP2()]
+    models = [MLP1(), MLP2(), ConvNet()]
     fig, ax = plt.subplots(figsize=(10,4))
     linestyles = ['-', ]
     labels = ['MLP1', 'MLP2']
@@ -763,8 +763,8 @@ def main():
         
 
         lr = 1e-6
-        epochs = 100
-        
+        epochs = 50
+
         print("Learning rate:", lr)
         optimizer = optim.Adam(current_model.parameters(), lr)
         train_losses, test_losses = train_model_energy(current_model, train_loader, test_loader, optimizer, epochs)
@@ -806,7 +806,7 @@ def main():
     
         print(f"Model energy error (abs):        {abs(target_E - total_E_np):.6f}") '''
 
-        plt.savefig('all_plot.png', dpi=150, bbox_inches='tight')
+        plt.savefig('all_plot.svg', dpi=150, bbox_inches='tight')
 
 
 if __name__ == "__main__":
