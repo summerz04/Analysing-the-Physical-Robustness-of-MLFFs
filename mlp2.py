@@ -335,14 +335,19 @@ def collate_fn(batch):
 
 
 def train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs):
-    train_losses = []
-    test_losses = []
+    # monitor energy and forces separately
+    train_energy_losses = []
+    train_force_losses = []
+
+    test_energy_losses = []
+    test_force_losses = []
 
     last_epoch_loss = 0.0
     for epoch in range(epochs):
         # Training
         model.train()
-        epoch_loss = 0.0
+        epoch_energy_loss = 0.0
+        epoch_force_loss = 0.0
 
         for (node_batch, edge_batch, triplet_batch, pos_batch,
              E_total_tar, F_tar, N_batch, elements_batch) in train_loader:
@@ -350,7 +355,8 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
             batch_size = len(E_total_tar)
             optimizer.zero_grad()
 
-            batch_loss = 0.0
+            batch_energy_loss = 0.0
+            batch_force_loss = 0.0
 
             for i in range(batch_size):
                 node_i = node_batch[i]
@@ -375,73 +381,103 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
                 F_pred = -grads
                 loss_F = ((F_pred - F_tar_i)**2).mean()
             
-                batch_loss += loss_E + loss_F # equal weighting for now
+                batch_energy_loss += loss_E
+                batch_force_loss += loss_F
+                
 
-            total_loss = batch_loss / batch_size
+            energy_loss = batch_energy_loss / batch_size
+            force_loss = batch_force_loss / batch_size 
 
+            total_loss = 0.5*energy_loss + 0.5*force_loss
             #print("Running batch loss tracker. E_loss:", loss_E_avg) 
             total_loss.backward()
             optimizer.step()
-            epoch_loss += total_loss.item()
 
-        avg_epoch_loss = epoch_loss /len(train_loader)
-        print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
-        train_losses.append(avg_epoch_loss.detach().cpu().item())
-        last_epoch_loss = avg_epoch_loss
+            epoch_energy_loss += energy_loss.item()
+            epoch_force_loss += force_loss.item()
+
+        avg_energy_loss = epoch_energy_loss / len(train_loader)
+        avg_force_loss = epoch_force_loss / len(train_loader)
+
+        train_energy_losses.append(avg_energy_loss)
+        train_force_losses.append(avg_force_loss)
 
         # Evaluation
         model.eval()
-        test_loss = 0.0
 
-        # force evaluation 
-        for (node_batch, edge_batch, triplet_batch, pos_batch,
-                E_total_tar,F_tar, N_batch, elements_batch) in test_loader:
-            batch_size = len(E_total_tar)
-            batch_loss = 0.0
-            for i in range(batch_size):
-                node_i = node_batch[i]
-                edge_i = edge_batch[i]
-                trip_i = triplet_batch[i]
-                pos_i = pos_batch[i]
-                elements_i = elements_batch[i]
-                N = N_batch[i]
+        test_epoch_energy = torch.tensor(0.0, device=device) 
+        test_epoch_force = torch.tensor(0.0, device=device)
+        with torch.enable_grad():
+            # force evaluation 
+            for (node_batch, edge_batch, triplet_batch, pos_batch,
+                    E_total_tar,F_tar, N_batch, elements_batch) in test_loader:
+                batch_size = len(E_total_tar)
 
-                edge_i = edge_features_torch(pos_i, elements_i)
+                batch_energy_loss = 0.0
+                batch_force_loss = 0.0
+                for i in range(batch_size):
+                    node_i = node_batch[i]
+                    edge_i = edge_batch[i]
+                    trip_i = triplet_batch[i]
+                    F_tar_i = F_tar[i]
+                    
+                    elements_i = elements_batch[i]
+                    N = N_batch[i]
 
-                E_pred = model.forward_energy(node_i, edge_i, trip_i)
-                loss_E = (E_pred - E_total_tar[i])**2
+                    pos_i = pos_batch[i].clone().detach().requires_grad_(True)
+                    edge_i = edge_features_torch(pos_i, elements_i)
 
-                grads = torch.autograd.grad(E_pred, pos_i, create_graph=True)[0]
-                F_pred = -grads
-                loss_F = ((F_pred - F_tar_i)**2).mean()
-                batch_loss += loss_E + loss_F
-                
-                
-            test_loss += batch_loss / batch_size
+                    E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                    loss_E = (E_pred - E_total_tar[i])**2
 
-        test_loss /= len(test_loader)
-        test_losses.append(test_loss.detach().cpu().item())
-        print(f'Test loss: {test_loss}')
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
+                    grads = torch.autograd.grad(E_pred, pos_i, create_graph=False)[0]
+                    F_pred = -grads
+                    loss_F = ((F_pred - F_tar_i)**2).mean()
+                    batch_energy_loss += loss_E
+                    batch_force_loss += loss_F
+                    
+                test_epoch_energy += batch_energy_loss / batch_size
+                test_epoch_force += batch_force_loss / batch_size
+
+            avg_test_energy = test_epoch_energy / len(test_loader)
+            avg_test_force = test_epoch_force / len(test_loader)
+
+            test_energy_losses.append(avg_test_energy.detach().cpu().item())
+            test_force_losses.append(avg_test_force.detach().cpu().item())
+
+            print(f'testing energy loss :{test_energy_losses}')
+            print(f'testing force loss :{test_force_losses}')
+
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch}: Train Loss = {avg_energy_loss:.4f}")
+            print(f"Epoch {epoch}: Train Loss = {avg_force_loss:.4f}")
 
     model.save('mlp.xtb.pt')
-    return train_losses, test_losses
+    return train_energy_losses, test_energy_losses, train_force_losses, test_force_losses
 
 
 # VISUALIZATION
-def plot_losses(train_losses, test_losses):
+def plot_energy_losses(train_energy_losses, test_energy_losses):
     plt.figure(figsize=(10, 4))
-    plt.plot(train_losses, label='Train Loss for energy')
-    plt.plot(test_losses,  label='Test Loss for energy')
+    plt.plot(train_energy_losses, label='Training loss')
+    plt.plot(test_energy_losses, label='Testing loss')
     plt.xlabel('Epoch')
     plt.ylabel('Loss')
     plt.title('MLP on xTB Training (H2O for energy)')
     plt.legend()
-    plt.savefig('mlp_xtb.png', dpi=150, bbox_inches='tight')
+    plt.savefig('mlp_xtb_energy.png', dpi=150, bbox_inches='tight')
     plt.close()
 
-
+def plot_force_losses(train_force_losses, test_force_losses):
+    plt.figure(figsize=(10, 4))
+    plt.plot(train_force_losses, label='Training loss')
+    plt.plot(test_force_losses, label='Testing loss')
+    plt.xlabel('Epoch')
+    plt.ylabel('Loss')
+    plt.title('MLP on xTB Training (H2O for forces)')
+    plt.legend()
+    plt.savefig('mlp_xtb_forces.png', dpi=150, bbox_inches='tight')
+    plt.close()
 
 # MAIN EXECUTION
 def main():
@@ -501,22 +537,23 @@ def main():
         print("Training new model...")
 
     lr = 1e-6
-    epochs = 5
+    epochs = 10
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
-    train_losses, test_losses = train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs)
+    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs)
     print('Done training')
     print('model saving finished')
-    print(f'Train losses: \n {train_losses}')
-    print(f'Test losses: \n {test_losses}')
-    try: 
-        plot_losses(train_losses, test_losses)
-        print('Loss plotted to mlp_xtb.png')
-    except Exception as e:
-        print(f'Plotting failed: {e}')
-        np.savetxt('train_losses.txt', train_losses)
-        np.savetxt('test_losses.txt', test_losses)
-        print(" losses saved to txt files")
+
+    print(f'Train energy losses: \n {train_energy_losses}')
+    print(f'Test energy losses: \n {test_energy_losses}')
+    print(f'Train force losses: \n {train_force_losses}')
+    print(f'Test force losses: \n {test_force_losses}')
+   
+    plot_energy_losses(train_energy_losses,
+               test_energy_losses)
+               
+    plot_force_losses(train_force_losses, 
+               test_force_losses)
     
 
     # leave for now 
