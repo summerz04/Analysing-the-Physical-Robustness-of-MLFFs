@@ -271,11 +271,35 @@ def molecules_to_tensors(molecules, device):
         # 5. LJ forces
         F_atom_t = torch.tensor(F_atom, dtype=torch.float32, device=device)
 
-        samples.append((node_t, edge_t, trip_t, pos_t, E_total, F_atom_t, N))
+        samples.append((node_t, edge_t, trip_t, pos_t, E_total, F_atom_t, N, els))
         targets_E.append(E_total)
 
     return samples, targets_E
 
+# everything here should be in pytorch 
+def edge_features_torch(pos_t, elements, cutoff: float = 4.0):
+    """For autograd to generate forces"""
+    N = len(elements)
+    pairs = torch.triu_indices(row=N, col=N, offset=1) # unique pairs of atom indices
+
+    
+    i_idx = pairs[0]
+    j_idx = pairs[1]
+    diff = pos_t[i_idx] - pos_t[j_idx]
+    dists = torch.norm(diff, dim=-1)
+    mask = dists < cutoff 
+    dists = dists[mask] # applying cutoff for meaningful distances
+    print(f'shape of distsL {dists.shape}')
+    log_prods = torch.tensor([log_primes[elements[i]] + log_primes[elements[j]]
+                         for i, j in zip(i_idx.tolist(), j_idx.tolist())], dtype=pos_t.dtype)
+    
+    log_prods = log_prods[mask]
+    print(f'shape of log prds: {log_prods.shape}')
+    edge_features = torch.stack((log_prods, dists), dim=1)
+
+    print(f'Shape of edge features: {edge_features.shape}')
+    return edge_features
+    
 
 # DATASET CLASS + COLLATE
 class EnergyDataset(Dataset):
@@ -304,12 +328,13 @@ def collate_fn(batch):
     E_total_batch = torch.tensor([b[4] for b in batch], dtype=torch.float32, device=device)
     F_batch = [b[5] for b in batch]
     N_batch = [b[6] for b in batch]
+    elements_batch = [b[7] for b in batch]
 
     return (node_batch, edge_batch, triplet_batch, pos_batch,
-            E_total_batch, F_batch, N_batch)
+            E_total_batch, F_batch, N_batch, elements_batch)
 
 
-def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
+def train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs):
     train_losses = []
     test_losses = []
 
@@ -320,33 +345,44 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
         epoch_loss = 0.0
 
         for (node_batch, edge_batch, triplet_batch, pos_batch,
-             E_total_tar, F_tar, N_batch) in train_loader:
+             E_total_tar, F_tar, N_batch, elements_batch) in train_loader:
 
             batch_size = len(E_total_tar)
             optimizer.zero_grad()
 
-            loss_E_tot = 0.0
+            batch_loss = 0.0
 
             for i in range(batch_size):
                 node_i = node_batch[i]
-                edge_i = edge_batch[i]
+                # edge_i = edge_batch[i]
                 trip_i = triplet_batch[i]
+                F_tar_i = F_tar[i]
+                elements_i = elements_batch[i]
+                
                 pos_i = pos_batch[i].clone().detach().requires_grad_(True)
+                
                 N = N_batch[i]
+                # computing edge features in training to access forces
+                edge_i = edge_features_torch(pos_i, elements_i)
 
-                # 1. Total energy loss (LJ)
-                total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
-                loss_E = (total_E_pred - E_total_tar[i])**2
-                loss_E_tot += loss_E
+                # 1. energy loss 
+                E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                loss_E = (E_pred - E_total_tar[i])**2
+                
 
-            loss_E_avg = loss_E_tot / batch_size
-        
-           
-            total_loss = loss_E_avg 
+                # 2. Force loss 
+                grads = torch.autograd.grad(E_pred, pos_i, create_graph=True)[0]
+                F_pred = -grads
+                loss_F = ((F_pred - F_tar_i)**2).mean()
+            
+                batch_loss += loss_E + loss_F # equal weighting for now
+
+            total_loss = batch_loss / batch_size
+
             #print("Running batch loss tracker. E_loss:", loss_E_avg) 
             total_loss.backward()
             optimizer.step()
-            epoch_loss += total_loss
+            epoch_loss += total_loss.item()
 
         avg_epoch_loss = epoch_loss /len(train_loader)
         print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
@@ -356,32 +392,40 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
         # Evaluation
         model.eval()
         test_loss = 0.0
-        with torch.no_grad():
-            for (node_batch, edge_batch, triplet_batch, pos_batch,
-                 E_total_tar,F_tar, N_batch) in test_loader:
-                batch_size = len(E_total_tar)
-                batch_loss = 0.0
-                for i in range(batch_size):
-                    node_i = node_batch[i]
-                    edge_i = edge_batch[i]
-                    trip_i = triplet_batch[i]
-                    pos_i = pos_batch[i]
-                    N = N_batch[i]
 
-                    total_E_pred = model.forward_energy(node_i, edge_i, trip_i)
-                    loss_E = (total_E_pred - E_total_tar[i])**2
+        # force evaluation 
+        for (node_batch, edge_batch, triplet_batch, pos_batch,
+                E_total_tar,F_tar, N_batch, elements_batch) in test_loader:
+            batch_size = len(E_total_tar)
+            batch_loss = 0.0
+            for i in range(batch_size):
+                node_i = node_batch[i]
+                edge_i = edge_batch[i]
+                trip_i = triplet_batch[i]
+                pos_i = pos_batch[i]
+                elements_i = elements_batch[i]
+                N = N_batch[i]
 
-                    batch_loss += loss_E
+                edge_i = edge_features_torch(pos_i, elements_i)
 
-                test_loss += batch_loss / batch_size
+                E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                loss_E = (E_pred - E_total_tar[i])**2
 
-            test_loss /= len(test_loader)
-            test_losses.append(test_loss.detach().cpu().item())
-            print(f'Test loss: {test_loss}')
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
+                grads = torch.autograd.grad(E_pred, pos_i, create_graph=True)[0]
+                F_pred = -grads
+                loss_F = ((F_pred - F_tar_i)**2).mean()
+                batch_loss += loss_E + loss_F
+                
+                
+            test_loss += batch_loss / batch_size
 
-    model.save('model_dropout.pt')
+        test_loss /= len(test_loader)
+        test_losses.append(test_loss.detach().cpu().item())
+        print(f'Test loss: {test_loss}')
+    if epoch % 10 == 0:
+        print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
+
+    model.save('mlp.xtb.pt')
     return train_losses, test_losses
 
 
@@ -396,6 +440,7 @@ def plot_losses(train_losses, test_losses):
     plt.legend()
     plt.savefig('mlp_xtb.png', dpi=150, bbox_inches='tight')
     plt.close()
+
 
 
 # MAIN EXECUTION
@@ -459,9 +504,11 @@ def main():
     epochs = 5
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
-    train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
+    train_losses, test_losses = train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs)
     print('Done training')
     print('model saving finished')
+    print(f'Train losses: \n {train_losses}')
+    print(f'Test losses: \n {test_losses}')
     try: 
         plot_losses(train_losses, test_losses)
         print('Loss plotted to mlp_xtb.png')
