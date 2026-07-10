@@ -5,6 +5,8 @@ from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
 import torch.autograd
 import numpy as np
 from scipy.spatial.distance import pdist, squareform
+import matplotlib.pyplot 
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 
@@ -56,7 +58,7 @@ def get_molecular_distances(atoms: Atoms, molecule_indices:list, mic: bool = Tru
 
 
 
-def get_edge_features(atoms: Atoms, elements: list, cutoff: float = 8.0):
+def get_edge_features(atoms: Atoms, elements: list, cutoff: float = 4.0):
 
     """Edge tokens: [log(p_i*p_j), Q_ij] for i < j.
     Edge features are stacked with log prods and intermolecular distances"""
@@ -109,7 +111,6 @@ class WedgeMLP(nn.Module):
     """
     def __init__(self):
         super().__init__()
-
         self.node_net = nn.Sequential(
             nn.Linear(1, 64), nn.LeakyReLU(), 
             nn.Linear(64,64),nn.LeakyReLU(), 
@@ -255,8 +256,8 @@ def molecules_to_tensors(molecules, device):
         else:
             edge_feats = np.zeros((0, 2))
         edge_t = torch.tensor(edge_feats, dtype=torch.float32, device=device)
+        print(f'shape of edge features per frame: {edge_feats.shape}')
 
-        
         # 3. Triplets
         wedges = wedge_product(edge_feats)
         if len(wedges) > 0:
@@ -459,13 +460,21 @@ def main():
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
     train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
-    #plot_losses(train_losses, test_losses)
-
-    print('Done training ')
+    print('Done training')
+    print('model saving finished')
+    try: 
+        plot_losses(train_losses, test_losses)
+        print('Loss plotted to mlp_xtb.png')
+    except Exception as e:
+        print(f'Plotting failed: {e}')
+        np.savetxt('train_losses.txt', train_losses)
+        np.savetxt('test_losses.txt', test_losses)
+        print(" losses saved to txt files")
+    
 
     # leave for now 
     # 5. Single‑molecule test (H2O equilibrium)
-    pos_test = read('water_test.xyz')
+    """pos_test = read('water_test.xyz')
     els = ['O','H','H']
     
     # extract real energy from xyz 
@@ -510,7 +519,7 @@ def main():
 
     F_rmse = np.sqrt(((forces_np - target_F)**2).mean())
     print(f"\nForce RMSE (per‑atom): {F_rmse:.6f}")
-
+"""
 
 if __name__ == "__main__":
     main()
