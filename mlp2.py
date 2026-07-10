@@ -56,7 +56,7 @@ def get_molecular_distances(atoms: Atoms, molecule_indices:list, mic: bool = Tru
 
 
 
-def get_edge_features(atoms: Atoms, elements: list, cutoff: float 8.0):
+def get_edge_features(atoms: Atoms, elements: list, cutoff: float = 8.0):
 
     """Edge tokens: [log(p_i*p_j), Q_ij] for i < j.
     Edge features are stacked with log prods and intermolecular distances"""
@@ -68,19 +68,20 @@ def get_edge_features(atoms: Atoms, elements: list, cutoff: float 8.0):
         return np.empty((0, 2))
 
     i_idx, j_idx = np.triu_indices(N, k=1)
-    log_prods = np.array([log_primes[elements[i]] + log_primes[elements[j]]
-                         for i, j in zip(i_idx, j_idx)])
-    pos = atoms.get_positions()
-    cell = atoms.cell
-    pbc = atoms.pbc
 
     # minimum image convention for each pair 
-
     mic_dists = np.array([
         atoms.get_distances(int(i), int(j), mic=True)[0] for i, j in zip(i_idx, j_idx)
     ])
     
-    #
+    # applying cut off distance 
+    i_idx = i_idx[mic_dists < cutoff]
+    j_idx = j_idx[mic_dists < cutoff]
+
+    mic_dists = mic_dists[mic_dists < cutoff]
+
+    log_prods = np.array([log_primes[elements[i]] + log_primes[elements[j]]
+                         for i, j in zip(i_idx, j_idx)])
     stacked_dists = np.stack([log_prods, mic_dists], axis=-1)
 
     print(f'Shape of edge features: {stacked_dists.shape}')
@@ -255,6 +256,7 @@ def molecules_to_tensors(molecules, device):
             edge_feats = np.zeros((0, 2))
         edge_t = torch.tensor(edge_feats, dtype=torch.float32, device=device)
 
+        
         # 3. Triplets
         wedges = wedge_product(edge_feats)
         if len(wedges) > 0:
@@ -457,7 +459,9 @@ def main():
     print("Learning rate:", lr)
     optimizer = optim.Adam(model.parameters(), lr)
     train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
-    plot_losses(train_losses, test_losses)
+    #plot_losses(train_losses, test_losses)
+
+    print('Done training ')
 
     # leave for now 
     # 5. Single‑molecule test (H2O equilibrium)
