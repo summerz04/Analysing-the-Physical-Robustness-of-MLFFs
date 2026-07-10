@@ -11,6 +11,7 @@ import os
 from ase import Atoms 
 from ase.io import read
 from ase.io.trajectory import Trajectory
+from ase.geometry import get_distances
 
 
 """
@@ -34,14 +35,34 @@ log_primes = {el: np.log(p) for el, p in prime_assign.items()}
 
 #  read traj files to use 
 def get_molecular_distances(atoms: Atoms, molecule_indices:list, mic: bool = True):
-    """Squared distances Q_ij = ||r_i - r_j||^2."""
+    """"""
+
     # get centre of mass for each molecule 
+    coms = []
+    for mol in molecule_indices:
+        com = atoms[mol].get_center_of_mass()
+        coms.append(com)
+    
+    coms = np.array(coms)
+
+    # calculate distance matrix 
+    distances = np.zeros((len(coms), len(coms)))
+    for i in range(len(coms)):
+        for j in range(len(coms)):
+            dist_vec, dist_len = get_distances(coms[i], coms[j], cell=atoms.cell, pbc=atoms.pbc)
+            distances[i, j] = dist_len[0]
+
+    return distances 
 
 
 
+def get_edge_features(atoms: Atoms, elements: list, cutoff: float 8.0):
 
-def get_edge_features(elements, pos):
-    """Edge tokens: [log(p_i*p_j), Q_ij] for i < j."""
+    """Edge tokens: [log(p_i*p_j), Q_ij] for i < j.
+    Edge features are stacked with log prods and intermolecular distances"""
+
+    # get atoms object for each frame 
+
     N = len(elements)
     if N < 2:
         return np.empty((0, 2))
@@ -49,8 +70,21 @@ def get_edge_features(elements, pos):
     i_idx, j_idx = np.triu_indices(N, k=1)
     log_prods = np.array([log_primes[elements[i]] + log_primes[elements[j]]
                          for i, j in zip(i_idx, j_idx)])
-    Q = quadrance(pos)[i_idx, j_idx]
-    return np.stack([log_prods, Q], axis=-1)
+    pos = atoms.get_positions()
+    cell = atoms.cell
+    pbc = atoms.pbc
+
+    # minimum image convention for each pair 
+
+    mic_dists = np.array([
+        atoms.get_distances(int(i), int(j), mic=True)[0] for i, j in zip(i_idx, j_idx)
+    ])
+    
+    #
+    stacked_dists = np.stack([log_prods, mic_dists], axis=-1)
+
+    print(f'Shape of edge features: {stacked_dists.shape}')
+    return stacked_dists
 
 
 def wedge_product(edge_feats):
@@ -183,10 +217,10 @@ def load_from_extxyz(filename):
         F_atom = atoms.get_forces()
 
         print(elements[0])
-        molecules.append((pos, elements, target_Etot, F_atom)) # same format as model
+        molecules.append((atoms, pos, elements, target_Etot, F_atom)) # same format as model, with added atoms object per frame
 
     print(f'Loaded molecules from {filename}')
-    return molecules, target_Etot
+    return molecules
 
 
 def molecules_to_tensors(molecules, device):
@@ -199,16 +233,20 @@ def molecules_to_tensors(molecules, device):
     samples = []
     targets_E = []
 
-    for pos, els, E_total, F_atom in molecules:
+
+    for atoms, pos, els, E_total, F_atom in molecules:
         N = len(els)
 
         # 1. Node features
         node_feats = np.array([log_primes[el] for el in els])[:, None]
         node_t = torch.tensor(node_feats, dtype=torch.float32, device=device)
 
+
         # 2. Edge features
+        
         if N >= 2:
-            edge_feats = get_edge_features(els, pos)[0]
+            edge_feats = get_edge_features(atoms, els)
+            print(f'shape of edge_feats = {edge_feats.shape}')
             if len(edge_feats) == 2:
                 edge_feats = edge_feats.reshape(1, 2)
             if edge_feats.ndim == 1:
@@ -309,7 +347,7 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
 
         avg_epoch_loss = epoch_loss /len(train_loader)
         print("Running epoch loss tracker:", avg_epoch_loss, "last epoch's loss:", last_epoch_loss) 
-        train_losses.append(avg_epoch_loss.detach().numpy())
+        train_losses.append(avg_epoch_loss.detach().cpu().item())
         last_epoch_loss = avg_epoch_loss
 
         # Evaluation
@@ -335,7 +373,7 @@ def train_model_energy(model, train_loader, test_loader, optimizer, epochs):
                 test_loss += batch_loss / batch_size
 
             test_loss /= len(test_loader)
-            test_losses.append(test_loss.detach().numpy())
+            test_losses.append(test_loss.detach().cpu().item())
             print(f'Test loss: {test_loss}')
         if epoch % 10 == 0:
             print(f"Epoch {epoch}: Train Loss = {avg_epoch_loss:.4f}, Test Loss = {test_loss:.4f}")
@@ -365,16 +403,18 @@ def main():
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
         print(f"Found {mol_filename}; loading data (recomputing LJ energy).")
-        molecules, target_Etot = load_from_extxyz(mol_filename)
+        molecules = load_from_extxyz(mol_filename)
     else:
         print(f"Generating new training data...")
         molecules = load_from_extxyz(filename='water_test.xyz')
     
     # 2. Convert to tensors
     print("Converting to tensors...")
+
     samples, targets_E = molecules_to_tensors(molecules, device)
 
-    print(f'The structure of molecules is: {molecules[0]}')
+
+    print(f'The structure of molecules is: {molecules}')
     print(f'targets_E: {targets_E}')
 
     # 3. Create Dataset + train/test split (80/20)
@@ -419,17 +459,18 @@ def main():
     train_losses, test_losses = train_model_energy(model, train_loader, test_loader, optimizer, epochs)
     plot_losses(train_losses, test_losses)
 
+    # leave for now 
     # 5. Single‑molecule test (H2O equilibrium)
     pos_test = read('water_test.xyz')
     els = ['O','H','H']
     
     # extract real energy from xyz 
-
-
     node_feats = np.array([log_primes[el] for el in els])[:, None]
     node_t = torch.tensor(node_feats, dtype=torch.float32, device=device)
 
     edge_feats = get_edge_features(els, pos_test)[0]
+    
+
     edge_t = torch.tensor(edge_feats, dtype=torch.float32, device=device)
 
     wedges = wedge_product(edge_feats)
