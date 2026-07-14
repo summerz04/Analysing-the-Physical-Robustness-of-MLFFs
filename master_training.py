@@ -10,6 +10,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 
+from torch_geometric.nn import MessagePassing
 from ase import Atoms 
 from ase.io import read
 from ase.io.trajectory import Trajectory
@@ -111,21 +112,21 @@ class WedgeMLP(nn.Module):
     def __init__(self):
         super().__init__()
         self.node_net = nn.Sequential(
-            nn.Linear(1, 64), nn.LeakyReLU(), 
-            nn.Linear(64,64),nn.LeakyReLU(), 
-            nn.Linear(64,4), nn.LeakyReLU(),
+            nn.Linear(1, 64), nn.Tanh(), 
+            nn.Linear(64,64),nn.Tanh(), 
+            nn.Linear(64,4), nn.Tanh(),
              nn.Linear(4,1)
         )
         self.edge_net = nn.Sequential(
-            nn.Linear(2, 64), nn.LeakyReLU(), 
-            nn.Linear(64,64), nn.LeakyReLU(), 
-            nn.Linear(64,4),nn.LeakyReLU(),
+            nn.Linear(2, 64), nn.Tanh(), 
+            nn.Linear(64,64), nn.Tanh(), 
+            nn.Linear(64,4),nn.Tanh(),
             nn.Linear(4,1)
         )
         self.triplet_net = nn.Sequential(
-            nn.Linear(1, 64), nn.LeakyReLU(), 
-            nn.Linear(64,64),nn.LeakyReLU(), 
-            nn.Linear(64,4), nn.LeakyReLU(),
+            nn.Linear(1, 64), nn.Tanh(), 
+            nn.Linear(64,64),nn.Tanh(), 
+            nn.Linear(64,4), nn.Tanh(),
              nn.Linear(4,1)
         )
 
@@ -195,32 +196,32 @@ class ConvNet(nn.Module):
 
         # node features are treated with mlp 
         self.node_net = nn.Sequential(
-            nn.Linear(1, 8), nn.LeakyReLU(), 
+            nn.Linear(1, 8), nn.Tanh(), 
             nn.Linear(8,16),
              
-             nn.LeakyReLU(), 
+             nn.Tanh(), 
             nn.Linear(16,8),
             
-               nn.LeakyReLU(),
-             nn.Linear(8,4), nn.LeakyReLU(),
+               nn.Tanh(),
+             nn.Linear(8,4), nn.Tanh(),
              nn.Linear(4,1)
         )
         # edges are treated with conv layers
         self.edge_conv = nn.Sequential(
             nn.Conv1d(in_channels=2, out_channels=4, kernel_size=1),
-            nn.LeakyReLU(),
+            nn.Tanh(),
             nn.Conv1d(in_channels=4, out_channels=1, kernel_size=1),
 
         )
         self.triplet_net = nn.Sequential(
-            nn.Linear(1, 8), nn.LeakyReLU(), 
+            nn.Linear(1, 8), nn.Tanh(), 
             nn.Linear(8,16),
             
-               nn.LeakyReLU(), 
+               nn.Tanh(), 
             nn.Linear(16,8),
              
-               nn.LeakyReLU(),
-             nn.Linear(8,4), nn.LeakyReLU(),
+               nn.Tanh(),
+             nn.Linear(8,4), nn.Tanh(),
              nn.Linear(4,1)
         )
         self.to(device)
@@ -276,6 +277,96 @@ class ConvNet(nn.Module):
 
         torch.save(self.state_dict(), filename)
         print(f"Model saved to {filename}")
+
+#---------------------------
+# messaging passing
+#---------------------------
+class MoleculeMessagePassing(MessagePassing):
+    def __init__(self, node_dim, edge_dim, hidden_dim, out_dim):
+        super(MoleculeMessagePassing, self).__init__(aggr='add')
+        
+        # 1. encode edge features
+        self.encode_edge = nn.Sequential(
+            nn.Linear(edge_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim)
+        )
+
+        # 2. combining node and edge features to create messages
+        self.message_pass = nn.Sequential(
+        nn.Linear(node_dim + hidden_dim, hidden_dim),
+        nn.SiLU(),
+        nn.Linear(hidden_dim, hidden_dim)
+        )
+
+        # 3. update node representations 
+        self.update_mlp = nn.Sequential(
+            nn.Linear(node_dim + hidden_dim, hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, out_dim)
+        )
+
+    # forward for MESSAGE PASSING
+    def forward(self, x, edge_index, edge_attr):
+        embedded_edge = self.encode_edge(edge_attr)
+        return self.propagate(edge_index, x=x, edge_emb=embedded_edge)
+    
+    # combines neighbour node features with edge features (DISTANCE)
+    def message(self, x_j, edge_emb):
+        # x_j are the node features of neighbours 
+        return self.message_pass(torch.cat([x_j, edge_emb], dim=-1))
+    
+    # return node representations after aggregation
+    def update(self, aggregated_out, x):
+        return x + self.update_mlp(torch.cat([x, aggregated_out], dim=-1))
+
+# Linear MLP MODEL: energy + per atom forces
+class MP_MLP(nn.Module):
+   
+    def __init__(self):
+        super().__init__()
+        self.GNN = MoleculeMessagePassing(node_dim=1,
+                                        edge_dim=1, 
+                                        hidden_dim=4,
+                                        out_dim=1)
+
+        self.node_net = nn.Sequential(
+            nn.Linear(2, 16), nn.LeakyReLU(), 
+            nn.Dropout(0.5),
+            nn.Linear(16, 8), nn.LeakyReLU(), 
+            nn.Dropout(0.5),
+            nn.Linear(8, 1)
+        )
+       
+        self.to(device)
+
+    def forward_energy(self, node_feats, position):
+        # DEFINE PHYSICS BETWEEN 
+        distance_squared = get_molecular_distances(position.cpu().detach().numpy())
+        
+        # DEFINE EDGES, how strongly do atoms interact within a cut off
+        adjacency = torch.from_numpy(np.where(distance_squared < 4, 1.0, 0.0)).float()
+        
+        adjacency = adjacency.to_sparse()
+
+        edge_index, _ = utils.to_edge_index(adjacency)
+        edge_index = edge_index.to(device)
+
+        row, col = edge_index[0], edge_index[1]
+        edge_attr = torch.norm(position[row] - position[col], dim=-1, keepdim=True)
+
+        # message passing
+        new_node_feats = self.GNN(node_feats, edge_index, edge_attr)
+        
+        # combine all features into combined feats
+        combined_feats = torch.cat([node_feats, new_node_feats], dim=1)
+        node_E = self.node_net(combined_feats).sum()
+        return node_E
+    
+    def save(self, filename='edge_attr.pt'):
+
+        torch.save(self.state_dict(), filename)
+        print(f"Model saved to {filename}") 
 
 
 # no need to generate dataset, reading from extxyz file
@@ -596,9 +687,12 @@ def train_all(model_name, model_class, train_loader, test_loader, epochs=100, lr
     if os.path.exists(model_filename):
         print(f"Found {model_filename}; loading model.")
         model.load_state_dict(torch.load(model_filename, map_location=device))
-
         
     optimizer = optim.Adam(model.parameters(), lr)
+
+    if model_name == 'Message Passing':
+        # pass correct parameters and train
+
     train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs)
     model.save(model_filename)
 
@@ -669,8 +763,9 @@ def main():
     print("Beginning to train models...")
 
     models = {
-    'MLP': WedgeMLP,
-    'Convolutional':ConvNet
+    #'MLP': WedgeMLP,
+    #'Convolutional':ConvNet,
+    'Message Passing': MP_MLP
     }
     results ={}
 
