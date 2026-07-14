@@ -453,16 +453,22 @@ def molecules_to_tensors(molecules, device):
         # 4. Positions (requires_grad=True)
         pos_t = torch.tensor(pos, dtype=torch.float32, device=device, requires_grad=True)
 
+        
         # 5. LJ forces
         F_atom_t = torch.tensor(F_atom, dtype=torch.float32, device=device)
 
-        samples.append((node_t, edge_t, trip_t, pos_t, E_total, F_atom_t, N, els))
+
+        #6. atoms object cell length
+        cell_t = torch.tensor(atoms.cell.lengths(), dtype=torch.float32, device=device)
+        
+        samples.append((node_t, edge_t, trip_t, pos_t, E_total, F_atom_t, N, els, cell_t))
         targets_E.append(E_total)
 
     return samples, targets_E
 
+
 # everything here should be in pytorch 
-def edge_features_torch(pos_t, elements, cutoff: float = 4.0):
+def edge_features_torch(pos_t, elements, cell_size, cutoff: float = 4.0):
     """For autograd to generate forces"""
     N = len(elements)
     pairs = torch.triu_indices(row=N, col=N, offset=1) # unique pairs of atom indices
@@ -470,11 +476,16 @@ def edge_features_torch(pos_t, elements, cutoff: float = 4.0):
     
     i_idx = pairs[0]
     j_idx = pairs[1]
-    diff = pos_t[i_idx] - pos_t[j_idx]
+
+    # minimum image convention distance 
+    raw_diff = pos_t[i_idx] - pos_t[j_idx]
+    
+    diff = raw_diff - cell_size * torch.round(raw_diff / cell_size)
+
     dists = torch.norm(diff, dim=-1)
     mask = dists < cutoff 
     dists = dists[mask] # applying cutoff for meaningful distances
-    print(f'shape of distsL {dists.shape}')
+    
     log_prods = torch.tensor([log_primes[elements[i]] + log_primes[elements[j]]
                          for i, j in zip(i_idx.tolist(), j_idx.tolist())], dtype=pos_t.dtype)
     
@@ -521,9 +532,10 @@ def collate_fn(batch):
     F_batch = [b[5] for b in batch]
     N_batch = [b[6] for b in batch]
     elements_batch = [b[7] for b in batch]
+    cellsize_batch =[b[8] for b in batch]
 
     return (node_batch, edge_batch, triplet_batch, pos_batch,
-            E_total_batch, F_batch, N_batch, elements_batch)
+            E_total_batch, F_batch, N_batch, elements_batch, cellsize_batch)
 
 
 def train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs):
@@ -542,7 +554,7 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
         epoch_force_loss = 0.0
 
         for (node_batch, edge_batch, triplet_batch, pos_batch,
-             E_total_tar, F_tar, N_batch, elements_batch) in train_loader:
+             E_total_tar, F_tar, N_batch, elements_batch, cellsize_batch) in train_loader:
 
             batch_size = len(E_total_tar)
             optimizer.zero_grad()
@@ -552,7 +564,7 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
 
             for i in range(batch_size):
                 node_i = node_batch[i]
-
+                cell_i = cellsize_batch[i]
                 F_tar_i = F_tar[i]
                 elements_i = elements_batch[i]
                 
@@ -560,7 +572,7 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
                 
                 N = N_batch[i]
                 # computing edge features in training to access forces
-                edge_i = edge_features_torch(pos_i, elements_i)
+                edge_i = edge_features_torch(pos_i, elements_i, cell_i)
 
                 # computing triplet features to access forces
                 trip_i = triplet_features_torch(edge_i)
@@ -601,16 +613,18 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
 
         test_epoch_energy = torch.tensor(0.0, device=device) 
         test_epoch_force = torch.tensor(0.0, device=device)
+        
         with torch.enable_grad():
             # force evaluation 
             for (node_batch, edge_batch, triplet_batch, pos_batch,
-                    E_total_tar,F_tar, N_batch, elements_batch) in test_loader:
+                    E_total_tar,F_tar, N_batch, elements_batch, cellsize_batch) in test_loader:
                 batch_size = len(E_total_tar)
 
                 batch_energy_loss = 0.0
                 batch_force_loss = 0.0
                 for i in range(batch_size):
                     node_i = node_batch[i]
+                    cell_i = cellsize_batch[i]
                     #edge_i = edge_batch[i]
                     #trip_i = triplet_batch[i]
                     F_tar_i = F_tar[i]
@@ -619,7 +633,7 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
                     N = N_batch[i]
 
                     pos_i = pos_batch[i].clone().detach().requires_grad_(True)
-                    edge_i = edge_features_torch(pos_i, elements_i)
+                    edge_i = edge_features_torch(pos_i, elements_i, cell_i)
                     trip_i = triplet_features_torch(edge_i)
                     E_pred = model.forward_energy(node_i, edge_i, trip_i)
                     loss_E = (E_pred - E_total_tar[i])**2
@@ -690,8 +704,7 @@ def train_all(model_name, model_class, train_loader, test_loader, epochs=100, lr
         
     optimizer = optim.Adam(model.parameters(), lr)
 
-    if model_name == 'Message Passing':
-        # pass correct parameters and train
+    # add message passing 
 
     train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs)
     model.save(model_filename)
@@ -763,9 +776,9 @@ def main():
     print("Beginning to train models...")
 
     models = {
-    #'MLP': WedgeMLP,
+    'MLP': WedgeMLP
     #'Convolutional':ConvNet,
-    'Message Passing': MP_MLP
+    #Message Passing': MP_MLP
     }
     results ={}
 
