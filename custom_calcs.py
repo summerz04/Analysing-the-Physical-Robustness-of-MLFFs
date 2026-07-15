@@ -128,5 +128,5 @@ print(f'energy: {atoms.get_potential_energy()}')
 print(f'forces: {atoms.get_forces()}')
 
 # checks
-print("\nChecks:")
-print("Number of atoms:", len(atoms))
+print('\nsanity checks:')
+print(f'number of atoms: {len(atoms)}')
