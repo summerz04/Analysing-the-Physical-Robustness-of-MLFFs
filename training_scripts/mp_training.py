@@ -86,7 +86,6 @@ def get_edge_features(atoms: Atoms, elements: list, cutoff: float = 4.0):
                          for i, j in zip(i_idx, j_idx)])
     stacked_dists = np.stack([log_prods, mic_dists], axis=-1)
 
-    print(f'Shape of edge features: {stacked_dists.shape}')
     return stacked_dists
 
 
@@ -151,12 +150,12 @@ class MP_MLP(nn.Module):
     def __init__(self):
         super().__init__()
         self.GNN = MoleculeMessagePassing(node_dim=1,
-                                        edge_dim=1, 
+                                        edge_dim=2, 
                                         hidden_dim=4,
                                         out_dim=1)
 
         self.node_net = nn.Sequential(
-            nn.Linear(2, 16), nn.LeakyReLU(), 
+            nn.Linear(3, 16), nn.LeakyReLU(), 
             nn.Dropout(0.5),
             nn.Linear(16, 8), nn.LeakyReLU(), 
             nn.Dropout(0.5),
@@ -165,30 +164,25 @@ class MP_MLP(nn.Module):
        
         self.to(device)
 
-    def forward_energy(self, node_feats, position):
-        # DEFINE PHYSICS BETWEEN 
-        distance_squared = get_molecular_distances(position.cpu().detach().numpy())
-        
-        # DEFINE EDGES, how strongly do atoms interact within a cut off
-        adjacency = torch.from_numpy(np.where(distance_squared < 4, 1.0, 0.0)).float()
-        
-        adjacency = adjacency.to_sparse()
-
-        edge_index, _ = utils.to_edge_index(adjacency)
-        edge_index = edge_index.to(device)
-
-        row, col = edge_index[0], edge_index[1]
-        edge_attr = torch.norm(position[row] - position[col], dim=-1, keepdim=True)
+    def forward_energy(self, node_feats, edge_feats, edge_idx, trip_feats):
 
         # message passing
-        new_node_feats = self.GNN(node_feats, edge_index, edge_attr)
+        new_node_feats = self.GNN(node_feats, edge_idx, edge_feats)
         
         # combine all features into combined feats
         combined_feats = torch.cat([node_feats, new_node_feats], dim=1)
-        node_E = self.node_net(combined_feats).sum()
+        
+        # utilise triplet features, find average and tie to each instance
+        # information loss using triplets because of the structure of message passing, 
+        # hard to index triplet values singularly
+        trip = trip_feats.mean(dim=0, keepdim=True)
+        trip_all = trip.expand(combined_feats.shape[0], -1)
+
+        final_input = torch.cat([combined_feats, trip_all], dim=1)
+        node_E = self.node_net(final_input).sum()
         return node_E
     
-    def save(self, filename='edge_attr.pt'):
+    def save(self, filename='message_pass.pt'):
 
         torch.save(self.state_dict(), filename)
         print(f"Model saved to {filename}") 
@@ -258,7 +252,6 @@ def molecules_to_tensors(molecules, device):
         
         if N >= 2:
             edge_feats = get_edge_features(atoms, els)
-            print(f'shape of edge_feats = {edge_feats.shape}')
             if len(edge_feats) == 2:
                 edge_feats = edge_feats.reshape(1, 2)
             if edge_feats.ndim == 1:
@@ -266,7 +259,6 @@ def molecules_to_tensors(molecules, device):
         else:
             edge_feats = np.zeros((0, 2))
         edge_t = torch.tensor(edge_feats, dtype=torch.float32, device=device)
-        print(f'shape of edge features per frame: {edge_feats.shape}')
 
         # 3. Triplets
         wedges = wedge_product(edge_feats)
@@ -315,11 +307,10 @@ def edge_features_torch(pos_t, elements, cell_size, cutoff: float = 4.0):
                          for i, j in zip(i_idx.tolist(), j_idx.tolist())], dtype=pos_t.dtype)
     
     log_prods = log_prods[mask]
-    print(f'shape of log prds: {log_prods.shape}')
     edge_features = torch.stack((log_prods, dists), dim=1)
-
-    print(f'Shape of edge features: {edge_features.shape}')
-    return edge_features
+    edge_idx = torch.stack([i_idx, j_idx], dim=0)
+    
+    return edge_features, edge_idx
     
 def triplet_features_torch(edge_feats):
     """Differentiable version: wedge(e1,e2) = t1*q2 - q1*t2."""
@@ -396,14 +387,15 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
                 pos_i = pos_batch[i].clone().detach().requires_grad_(True)
                 
                 N = N_batch[i]
+
                 # computing edge features in training to access forces
-                edge_i = edge_features_torch(pos_i, elements_i, cell_i)
+                edge_i, edge_index_i = edge_features_torch(pos_i, elements_i, cell_i)
 
                 # computing triplet features to access forces
                 trip_i = triplet_features_torch(edge_i)
 
                 # 1. energy loss 
-                E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                E_pred = model.forward_energy(node_i, edge_i, edge_index_i, trip_i)
                 loss_E = (E_pred - E_total_tar[i])**2
                 
 
@@ -458,9 +450,9 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
                     N = N_batch[i]
 
                     pos_i = pos_batch[i].clone().detach().requires_grad_(True)
-                    edge_i = edge_features_torch(pos_i, elements_i, cell_i)
+                    edge_i, edge_index_i = edge_features_torch(pos_i, elements_i, cell_i)
                     trip_i = triplet_features_torch(edge_i)
-                    E_pred = model.forward_energy(node_i, edge_i, trip_i)
+                    E_pred = model.forward_energy(node_i, edge_i, edge_index_i, trip_i)
                     loss_E = (E_pred - E_total_tar[i])**2
 
                     grads = torch.autograd.grad(E_pred, pos_i, create_graph=False)[0]
@@ -498,7 +490,7 @@ def plot_energy_losses(train_energy_losses, test_energy_losses, model_name):
     plt.ylabel('Loss')
     plt.title(f'{model_name} on xTB Training (H2O for energy)')
     plt.legend()
-    plt.savefig(f'./training_figs/{model_name}_xtb_energy.png', dpi=150, bbox_inches='tight')
+    plt.savefig(f'../training_figs/{model_name}_xtb_energy.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 def plot_force_losses(train_force_losses, test_force_losses, model_name):
@@ -509,7 +501,7 @@ def plot_force_losses(train_force_losses, test_force_losses, model_name):
     plt.ylabel('Loss')
     plt.title(f'{model_name} on xTB Training (H2O for forces)')
     plt.legend()
-    plt.savefig(f'./training_figs/{model_name}_xtb_forces.png', dpi=150, bbox_inches='tight')
+    plt.savefig(f'../training_figs/{model_name}_xtb_forces.png', dpi=150, bbox_inches='tight')
     plt.close()
 
 # ------------------------------------
@@ -517,7 +509,7 @@ def plot_force_losses(train_force_losses, test_force_losses, model_name):
 #-------------------------------------
 
 
-def train_all(model_name, model_class, train_loader, test_loader, epochs=100, lr=1e-4):
+def train_all(model_name, model_class, train_loader, test_loader, epochs=250, lr=1e-5):
     print(f'Training {model_name} model...')
     model = model_class()
     model_filename = f'{model_name}_xtb.pt'
@@ -550,13 +542,13 @@ def plot_comparison(results, key, ylabel, filename):
     plt.ylabel(ylabel)
     plt.title(f'{ylabel} comparison across models')
     plt.legend()
-    plt.savefig(f'./training_figs/{filename}', dpi=150, bbox_inches='tight')
+    plt.savefig(f'../training_figs/{filename}', dpi=150, bbox_inches='tight')
     plt.close()
     print('Finished plotting')
 
 # MAIN EXECUTION
 def main():
-    mol_filename = 'water_test.xyz'
+    mol_filename = '../train_generation/shuffled_water_dataset.extxyz'
 
     # 1. Load or generate molecules
     if os.path.exists(mol_filename):
@@ -598,17 +590,18 @@ def main():
         sampler=SubsetRandomSampler(test_idx)
     )
 
-    print("Beginning to train models...")
+    print("Beginning to train MLP...")
 
     models = {
-    'MLP': WedgeMLP
+    'MP': MP_MLP
     #'Convolutional':ConvNet,
     #Message Passing': MP_MLP
     }
+
     results ={}
 
     for name, mlff in models.items():
-        results[name] = train_all(name, mlff, train_loader, test_loader, epochs=10)
+        results[name] = train_all(name, mlff, train_loader, test_loader)
 
    
         print(f'Done training {name}')
