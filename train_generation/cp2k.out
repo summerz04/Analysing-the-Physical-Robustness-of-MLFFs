@@ -1,0 +1,1055 @@
+
+  **** **** ******  **  PROGRAM STARTED AT               2026-07-16 14:53:51.284
+ ***** ** ***  *** **   PROGRAM STARTED ON                       DESKTOP-D79QQVM
+ **    ****   ******    PROGRAM STARTED BY                               fh22600
+ ***** **    ** ** **   PROGRAM PROCESS ID                                 82641
+  **** **  *******  **  PROGRAM STARTED IN /home/fh22600/research-project-2026/F
+                                           F_model/train_generation
+
+ CP2K| version string:                                       CP2K version 2026.1
+ CP2K| source code revision number:                                      aceff1c
+ CP2K| cp2kflags: omp libint fftw3 libxc parallel scalapack mpi_f08 cosma xsmm p
+ CP2K|            lumed2 spglib sirius libtorch hdf5 trexio
+ CP2K| is freely available from                            https://www.cp2k.org/
+ CP2K| Program compiled at                                   2026-06-16 16:35:48
+ CP2K| Program compiled on                                                      
+ CP2K| Program compiled for                                               x86_64
+ CP2K| Data directory path    /home/fh22600/miniforge3/envs/cp2k_env/share/cp2k/
+ CP2K| Input file name                                                  cp2k.inp
+
+ GLOBAL| Force Environment number                                              1
+ GLOBAL| Basis set file name                                        BASIS_MOLOPT
+ GLOBAL| Potential file name                                           POTENTIAL
+ GLOBAL| MM Potential file name                                     MM_POTENTIAL
+ GLOBAL| Coordinate file name                               water_sampling_1.xyz
+ GLOBAL| Method name                                                        CP2K
+ GLOBAL| Project name                                                       cp2k
+ GLOBAL| Run type                                                   ENERGY_FORCE
+ GLOBAL| FFT library                                                       FFTW3
+ GLOBAL| Diagonalization library                                       ScaLAPACK
+ GLOBAL| Cholesky decomposition library                                ScaLAPACK
+ GLOBAL| DGEMM library                                                      BLAS
+ GLOBAL| Orthonormality check for eigenvectors                          DISABLED
+ GLOBAL| Matrix multiplication library                                     COSMA
+ GLOBAL| All-to-all communication in single precision                          F
+ GLOBAL| FFTs using library dependent lengths                                  F
+ GLOBAL| Grid backend                                                       AUTO
+ GLOBAL| Global print level                                                  LOW
+ GLOBAL| MPI I/O enabled                                                       T
+ GLOBAL| Total number of message passing processes                             1
+ GLOBAL| Number of distributed systems (nodes)                                 1
+ GLOBAL| Number of threads for this process                                    8
+ GLOBAL| This output is from process                                           0
+ GLOBAL| OpenMP stack size per thread (OMP_STACKSIZE)                    default
+ GLOBAL| CPU model name                        AMD Ryzen AI 5 340 w/ Radeon 840M
+ GLOBAL| CPUID                                                              1003
+ GLOBAL| Compiled for CPUID                                                 1002
+
+ *** HINT in environment.F:960 :: The compiler target flags (x86_avx2)     ***
+ *** used to build this binary cannot exploit all extensions of this CPU   ***
+ *** model (x86_avx512). Consider compiler target flags as part of FCFLAGS ***
+ *** and CFLAGS (ARCH file).                                               ***
+
+
+ MEMORY| system memory details [Kb]
+ MEMORY|                        rank 0           min           max       average
+ MEMORY| MemTotal             10183308      10183308      10183308      10183308
+ MEMORY| MemFree                 92736         92736         92736         92736
+ MEMORY| Buffers                  1780          1780          1780          1780
+ MEMORY| Cached                 436372        436372        436372        436372
+ MEMORY| Slab                   146252        146252        146252        146252
+ MEMORY| SReclaimable            50748         50748         50748         50748
+ MEMORY| MemLikelyFree          581636        581636        581636        581636
+
+
+ *** WARNING in atoms_input.F:123 :: Overwriting coordinates. Active    ***
+ *** coordinates read from &COORD section. Active coordinates READ from ***
+ *** &COORD section                                                     ***
+
+
+ GENERATE|  Preliminary Number of Bonds generated:                             0
+ GENERATE|  Achieved consistency in connectivity generation.
+
+ *** WARNING in qs_kind_types.F:2324 :: Information provided in the input ***
+ *** file regarding POTENTIAL for KIND <O> will be ignored!               ***
+
+
+ *** WARNING in qs_kind_types.F:2330 :: Information provided in the input ***
+ *** file regarding BASIS for KIND <O> will be ignored!                   ***
+
+
+ *** WARNING in qs_kind_types.F:2324 :: Information provided in the input ***
+ *** file regarding POTENTIAL for KIND <H> will be ignored!               ***
+
+
+ *** WARNING in qs_kind_types.F:2330 :: Information provided in the input ***
+ *** file regarding BASIS for KIND <H> will be ignored!                   ***
+
+
+
+                  #####   #####        #          ####### ######   
+                 #     # #     #      #              #    #     #  
+                 #     # #           #    ##   ##    #    #     #  
+                 #     #  #####     #      ## ##     #    ######   
+                 #   # #       #   #        ###      #    #     #  
+                 #    #  #     #  #        ## ##     #    #     #  
+                  #### #  #####  #        ##   ##    #    ######   
+
+                                   GFN1-xTB 
+                                 Version 1.1                       
+                            J. Hutter and A. Hehn                  
+
+
+ EWALD| Summation is done by:                                               SPME
+ EWALD| Alpha parameter [       ANGSTROM^-1]                              1.8897
+ EWALD| Real Space Cutoff [          ANGSTROM]                            1.7854
+ EWALD| G-space max. Miller index                        125       125       125
+ EWALD| Spline interpolation order                                             6
+
+
+ TOTAL NUMBERS AND MAXIMUM NUMBERS
+
+  Total number of            - Atomic kinds:                                   2
+                             - Atoms:                                          3
+                             - Shell sets:                                     6
+                             - Shells:                                         6
+                             - Primitive Cartesian functions:                 44
+                             - Cartesian basis functions:                      8
+                             - Spherical basis functions:                      8
+
+  Maximum angular momentum of the orbital basis functions:                     1
+
+
+ SCF PARAMETERS         Density guess:                                    ATOMIC
+                        --------------------------------------------------------
+                        max_scf:                                              50
+                        max_scf_history:                                       0
+                        max_diis:                                              4
+                        --------------------------------------------------------
+                        eps_scf:                                        1.00E-06
+                        eps_scf_history:                                0.00E+00
+                        eps_diis:                                       0.00E+00
+                        eps_eigval:                                     1.00E-05
+                        --------------------------------------------------------
+                        level_shift [a.u.]:                             0.000000
+                        --------------------------------------------------------
+                        No outer SCF
+
+ Extrapolation method: initial_guess
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.3     0.10269162        -5.6712125965 -5.67E+00
+     2 OT DIIS     0.80E-01    0.3     0.05377468        -5.6917962363 -2.06E-02
+     3 OT DIIS     0.80E-01    0.3     0.00393238        -5.6994658843 -7.67E-03
+     4 OT DIIS     0.80E-01    0.3     0.00272256        -5.6994980933 -3.22E-05
+     5 OT DIIS     0.80E-01    0.2     0.00134099        -5.6995124688 -1.44E-05
+     6 OT DIIS     0.80E-01    0.3     0.00018822        -5.6995170603 -4.59E-06
+     7 OT DIIS     0.80E-01    0.3     0.00048489        -5.6995165334  5.27E-07
+     8 OT DIIS     0.80E-01    0.2     0.00002201        -5.6995171512 -6.18E-07
+     9 OT DIIS     0.80E-01    0.3     0.00000015        -5.6995171525 -1.32E-09
+
+  *** SCF run converged in     9 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.89878382616668
+  Repulsive potential energy:                                   0.15295017809957
+  Electronic energy:                                            0.04639023903561
+  DFTB3 3rd order energy:                                       0.00006379301570
+  Dispersion energy:                                           -0.00013753646051
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                -5.69951715247632
+
+  **** **** ******  **  PROGRAM STARTED AT               2026-07-16 14:55:42.960
+ ***** ** ***  *** **   PROGRAM STARTED ON                       DESKTOP-D79QQVM
+ **    ****   ******    PROGRAM STARTED BY                               fh22600
+ ***** **    ** ** **   PROGRAM PROCESS ID                                 82800
+  **** **  *******  **  PROGRAM STARTED IN /home/fh22600/research-project-2026/F
+                                           F_model/train_generation
+
+ CP2K| version string:                                       CP2K version 2026.1
+ CP2K| source code revision number:                                      aceff1c
+ CP2K| cp2kflags: omp libint fftw3 libxc parallel scalapack mpi_f08 cosma xsmm p
+ CP2K|            lumed2 spglib sirius libtorch hdf5 trexio
+ CP2K| is freely available from                            https://www.cp2k.org/
+ CP2K| Program compiled at                                   2026-06-16 16:35:48
+ CP2K| Program compiled on                                                      
+ CP2K| Program compiled for                                               x86_64
+ CP2K| Data directory path    /home/fh22600/miniforge3/envs/cp2k_env/share/cp2k/
+ CP2K| Input file name                                                  cp2k.inp
+
+ GLOBAL| Force Environment number                                              1
+ GLOBAL| Basis set file name                                        BASIS_MOLOPT
+ GLOBAL| Potential file name                                           POTENTIAL
+ GLOBAL| MM Potential file name                                     MM_POTENTIAL
+ GLOBAL| Coordinate file name                               water_sampling_1.xyz
+ GLOBAL| Method name                                                        CP2K
+ GLOBAL| Project name                                                       cp2k
+ GLOBAL| Run type                                                   ENERGY_FORCE
+ GLOBAL| FFT library                                                       FFTW3
+ GLOBAL| Diagonalization library                                       ScaLAPACK
+ GLOBAL| Cholesky decomposition library                                ScaLAPACK
+ GLOBAL| DGEMM library                                                      BLAS
+ GLOBAL| Orthonormality check for eigenvectors                          DISABLED
+ GLOBAL| Matrix multiplication library                                     COSMA
+ GLOBAL| All-to-all communication in single precision                          F
+ GLOBAL| FFTs using library dependent lengths                                  F
+ GLOBAL| Grid backend                                                       AUTO
+ GLOBAL| Global print level                                                  LOW
+ GLOBAL| MPI I/O enabled                                                       T
+ GLOBAL| Total number of message passing processes                             1
+ GLOBAL| Number of distributed systems (nodes)                                 1
+ GLOBAL| Number of threads for this process                                    8
+ GLOBAL| This output is from process                                           0
+ GLOBAL| OpenMP stack size per thread (OMP_STACKSIZE)                    default
+ GLOBAL| CPU model name                        AMD Ryzen AI 5 340 w/ Radeon 840M
+ GLOBAL| CPUID                                                              1003
+ GLOBAL| Compiled for CPUID                                                 1002
+
+ *** HINT in environment.F:960 :: The compiler target flags (x86_avx2)     ***
+ *** used to build this binary cannot exploit all extensions of this CPU   ***
+ *** model (x86_avx512). Consider compiler target flags as part of FCFLAGS ***
+ *** and CFLAGS (ARCH file).                                               ***
+
+
+ MEMORY| system memory details [Kb]
+ MEMORY|                        rank 0           min           max       average
+ MEMORY| MemTotal             10183308      10183308      10183308      10183308
+ MEMORY| MemFree                647296        647296        647296        647296
+ MEMORY| Buffers                  9496          9496          9496          9496
+ MEMORY| Cached                 794864        794864        794864        794864
+ MEMORY| Slab                   140376        140376        140376        140376
+ MEMORY| SReclaimable            45360         45360         45360         45360
+ MEMORY| MemLikelyFree         1497016       1497016       1497016       1497016
+
+
+ *** WARNING in atoms_input.F:123 :: Overwriting coordinates. Active    ***
+ *** coordinates read from &COORD section. Active coordinates READ from ***
+ *** &COORD section                                                     ***
+
+
+ GENERATE|  Preliminary Number of Bonds generated:                             0
+ GENERATE|  Achieved consistency in connectivity generation.
+
+ *** WARNING in qs_kind_types.F:2324 :: Information provided in the input ***
+ *** file regarding POTENTIAL for KIND <O> will be ignored!               ***
+
+
+ *** WARNING in qs_kind_types.F:2330 :: Information provided in the input ***
+ *** file regarding BASIS for KIND <O> will be ignored!                   ***
+
+
+ *** WARNING in qs_kind_types.F:2324 :: Information provided in the input ***
+ *** file regarding POTENTIAL for KIND <H> will be ignored!               ***
+
+
+ *** WARNING in qs_kind_types.F:2330 :: Information provided in the input ***
+ *** file regarding BASIS for KIND <H> will be ignored!                   ***
+
+
+
+                  #####   #####        #          ####### ######   
+                 #     # #     #      #              #    #     #  
+                 #     # #           #    ##   ##    #    #     #  
+                 #     #  #####     #      ## ##     #    ######   
+                 #   # #       #   #        ###      #    #     #  
+                 #    #  #     #  #        ## ##     #    #     #  
+                  #### #  #####  #        ##   ##    #    ######   
+
+                                   GFN1-xTB 
+                                 Version 1.1                       
+                            J. Hutter and A. Hehn                  
+
+
+ EWALD| Summation is done by:                                               SPME
+ EWALD| Alpha parameter [       ANGSTROM^-1]                              1.8897
+ EWALD| Real Space Cutoff [          ANGSTROM]                            1.7854
+ EWALD| G-space max. Miller index                        125       125       125
+ EWALD| Spline interpolation order                                             6
+
+
+ TOTAL NUMBERS AND MAXIMUM NUMBERS
+
+  Total number of            - Atomic kinds:                                   2
+                             - Atoms:                                          3
+                             - Shell sets:                                     6
+                             - Shells:                                         6
+                             - Primitive Cartesian functions:                 44
+                             - Cartesian basis functions:                      8
+                             - Spherical basis functions:                      8
+
+  Maximum angular momentum of the orbital basis functions:                     1
+
+
+ SCF PARAMETERS         Density guess:                                    ATOMIC
+                        --------------------------------------------------------
+                        max_scf:                                              50
+                        max_scf_history:                                       0
+                        max_diis:                                              4
+                        --------------------------------------------------------
+                        eps_scf:                                        1.00E-06
+                        eps_scf_history:                                0.00E+00
+                        eps_diis:                                       0.00E+00
+                        eps_eigval:                                     1.00E-05
+                        --------------------------------------------------------
+                        level_shift [a.u.]:                             0.000000
+                        --------------------------------------------------------
+                        No outer SCF
+
+ Extrapolation method: initial_guess
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.4     0.10269162        -5.6712125965 -5.67E+00
+     2 OT DIIS     0.80E-01    0.3     0.05377468        -5.6917962363 -2.06E-02
+     3 OT DIIS     0.80E-01    0.3     0.00393238        -5.6994658843 -7.67E-03
+     4 OT DIIS     0.80E-01    0.3     0.00272256        -5.6994980933 -3.22E-05
+     5 OT DIIS     0.80E-01    0.3     0.00134099        -5.6995124688 -1.44E-05
+     6 OT DIIS     0.80E-01    0.3     0.00018822        -5.6995170603 -4.59E-06
+     7 OT DIIS     0.80E-01    0.2     0.00048489        -5.6995165334  5.27E-07
+     8 OT DIIS     0.80E-01    0.3     0.00002201        -5.6995171512 -6.18E-07
+     9 OT DIIS     0.80E-01    0.2     0.00000015        -5.6995171525 -1.32E-09
+
+  *** SCF run converged in     9 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.89878382616668
+  Repulsive potential energy:                                   0.15295017809957
+  Electronic energy:                                            0.04639023903561
+  DFTB3 3rd order energy:                                       0.00006379301570
+  Dispersion energy:                                           -0.00013753646051
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                -5.69951715247632
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]             -5.699517152475430
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        2.47807221086E+03  -6.42561627311E+02   1.21898510771E-13
+ STRESS|      y       -6.42561627311E+02   2.18125547053E+03   2.59807833973E-14
+ STRESS|      z        1.21898510771E-13   2.59807833973E-14   5.02008901510E-02
+ STRESS| 1/3 Trace                                             1.55312596076E+03
+ STRESS| Determinant                                           2.50624084706E+05
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   5.02008901510E-02   1.67018640422E+03   2.98914127718E+03
+ STRESS|      x          -0.000000000000      0.622479178479      0.782636360234
+ STRESS|      y          -0.000000000000      0.782636360234     -0.622479178479
+ STRESS|      z           1.000000000000      0.000000000000      0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.2     0.34499101         7.2529582249  7.25E+00
+     2 OT DIIS     0.80E-01    0.2     0.21921562         7.0068855738 -2.46E-01
+     3 OT DIIS     0.80E-01    0.2     0.06703017         6.8504480231 -1.56E-01
+     4 OT DIIS     0.80E-01    0.2     0.02155229         6.8357848901 -1.47E-02
+     5 OT DIIS     0.80E-01    0.2     0.00652267         6.8342940243 -1.49E-03
+     6 OT DIIS     0.80E-01    0.2     0.00398725         6.8342251225 -6.89E-05
+     7 OT DIIS     0.80E-01    0.2     0.00039923         6.8341722319 -5.29E-05
+     8 OT DIIS     0.80E-01    0.2     0.00017647         6.8341717890 -4.43E-07
+     9 OT DIIS     0.80E-01    0.2     0.00007057         6.8341716982 -9.08E-08
+    10 OT DIIS     0.80E-01    0.2     0.00000478         6.8341716837 -1.45E-08
+    11 OT DIIS     0.80E-01    0.2     0.00000066         6.8341716836 -6.78E-11
+
+  *** SCF run converged in    11 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.77179173717029
+  Repulsive potential energy:                                  12.49522216662169
+  Electronic energy:                                            0.11074541311487
+  DFTB3 3rd order energy:                                       0.00013177738270
+  Dispersion energy:                                           -0.00013593631487
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                 6.83417168363411
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]              6.834171683633121
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        5.74364031789E+04   3.32134237404E+04  -1.54594784121E-15
+ STRESS|      y        3.32134237404E+04   2.06602712338E+04  -4.65673533160E-15
+ STRESS|      z       -1.54594784121E-15  -4.65673533160E-15   2.19803539522E-01
+ STRESS| 1/3 Trace                                             2.60322980721E+04
+ STRESS| Determinant                                           1.83580249894E+07
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   2.19803539522E-01   1.08450590905E+03   7.70121685037E+04
+ STRESS|      x          -0.000000000000     -0.507761022393      0.861497965255
+ STRESS|      y           0.000000000000      0.861497965255      0.507761022393
+ STRESS|      z           1.000000000000     -0.000000000000     -0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.2     0.12853375         1.1703842474  1.17E+00
+     2 OT DIIS     0.80E-01    0.2     0.07700445         1.1368109827 -3.36E-02
+     3 OT DIIS     0.80E-01    0.2     0.02309509         1.1168924888 -1.99E-02
+     4 OT DIIS     0.80E-01    0.2     0.00237528         1.1148457241 -2.05E-03
+     5 OT DIIS     0.80E-01    0.2     0.00134681         1.1148317965 -1.39E-05
+     6 OT DIIS     0.80E-01    0.2     0.00012376         1.1148238936 -7.90E-06
+     7 OT DIIS     0.80E-01    0.2     0.00007642         1.1148238631 -3.05E-08
+     8 OT DIIS     0.80E-01    0.2     0.00003533         1.1148238462 -1.69E-08
+     9 OT DIIS     0.80E-01    0.2     0.00000535         1.1148238402 -6.00E-09
+    10 OT DIIS     0.80E-01    0.2     0.00000154         1.1148238401 -1.55E-10
+    11 OT DIIS     0.80E-01    0.2     0.00000019         1.1148238401 -6.72E-12
+
+  *** SCF run converged in    11 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.76792733723233
+  Repulsive potential energy:                                   6.77295800659624
+  Electronic energy:                                            0.10980460813630
+  DFTB3 3rd order energy:                                       0.00012449965332
+  Dispersion energy:                                           -0.00013593707469
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                 1.11482384007883
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]              1.114823840078750
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        4.77759360129E+04   2.50449631591E+02  -2.13286580506E-14
+ STRESS|      y        2.50449631591E+02   1.63672273663E+00  -7.67527852621E-15
+ STRESS|      z       -2.13286580506E-14  -7.67527852621E-15   2.22479861272E-01
+ STRESS| 1/3 Trace                                             1.59259317385E+04
+ STRESS| Determinant                                           3.44197320165E+03
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   2.22479861272E-01   3.23814014434E-01   4.77772489216E+04
+ STRESS|      x          -0.000000000000     -0.005242134614      0.999986259918
+ STRESS|      y           0.000000000000      0.999986259918      0.005242134614
+ STRESS|      z           1.000000000000     -0.000000000000     -0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.2     0.10768193        -1.5816760163 -1.58E+00
+     2 OT DIIS     0.80E-01    0.2     0.06145203        -1.6045280897 -2.29E-02
+     3 OT DIIS     0.80E-01    0.2     0.02401153        -1.6163863574 -1.19E-02
+     4 OT DIIS     0.80E-01    0.3     0.00371008        -1.6185630003 -2.18E-03
+     5 OT DIIS     0.80E-01    0.3     0.00099359        -1.6186046747 -4.17E-05
+     6 OT DIIS     0.80E-01    0.4     0.00042698        -1.6186069960 -2.32E-06
+     7 OT DIIS     0.80E-01    0.7     0.00009480        -1.6186077025 -7.07E-07
+     8 OT DIIS     0.80E-01    0.3     0.00002967        -1.6186077282 -2.57E-08
+     9 OT DIIS     0.80E-01    0.3     0.00000905        -1.6186077309 -2.70E-09
+    10 OT DIIS     0.80E-01    0.3     0.00000055        -1.6186077312 -2.59E-10
+
+  *** SCF run converged in    10 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.76401115062996
+  Repulsive potential energy:                                   4.03700195889223
+  Electronic energy:                                            0.10841998425766
+  DFTB3 3rd order energy:                                       0.00011741615595
+  Dispersion energy:                                           -0.00013593984631
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                -1.61860773117042
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]             -1.618607731171137
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        3.31574257867E+04   2.07529386056E+00  -6.34644885772E-14
+ STRESS|      y        2.07529386056E+00   2.24630874975E-01  -4.36706207983E-15
+ STRESS|      z       -6.34644885772E-14  -4.36706207983E-15   2.24487871411E-01
+ STRESS| 1/3 Trace                                             1.10526249685E+04
+ STRESS| Determinant                                           1.67105959135E+03
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   2.24487871411E-01   2.24500983295E-01   3.31574259166E+04
+ STRESS|      x          -0.000000000000     -0.000062589536      0.999999998041
+ STRESS|      y           0.000000000333      0.999999998041      0.000062589536
+ STRESS|      z           1.000000000000     -0.000000000333     -0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.6     0.02924523        -2.9982985761 -3.00E+00
+     2 OT DIIS     0.80E-01    0.2     0.01564500        -2.9999520579 -1.65E-03
+     3 OT DIIS     0.80E-01    0.2     0.00588821        -3.0006872746 -7.35E-04
+     4 OT DIIS     0.80E-01    0.2     0.00057760        -3.0008266456 -1.39E-04
+     5 OT DIIS     0.80E-01    0.2     0.00018971        -3.0008278948 -1.25E-06
+     6 OT DIIS     0.80E-01    0.2     0.00009368        -3.0008280429 -1.48E-07
+     7 OT DIIS     0.80E-01    0.2     0.00002029        -3.0008280719 -2.90E-08
+     8 OT DIIS     0.80E-01    0.2     0.00000300        -3.0008280743 -2.32E-09
+     9 OT DIIS     0.80E-01    0.2     0.00000119        -3.0008280743 -2.84E-11
+    10 OT DIIS     0.80E-01    0.4     0.00000005        -3.0008280743 -4.60E-12
+
+  *** SCF run converged in    10 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.75988797856712
+  Repulsive potential energy:                                   2.65227149211986
+  Electronic energy:                                            0.10681360898523
+  DFTB3 3rd order energy:                                       0.00011075086654
+  Dispersion energy:                                           -0.00013594769974
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                -3.00082807429523
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]             -3.000828074295232
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        2.53247903476E+04   2.13433991285E-02  -4.69311768933E-15
+ STRESS|      y        2.13433991285E-02   2.26270057277E-01  -2.74150143609E-14
+ STRESS|      z       -4.69311768933E-15  -2.74150143609E-14   2.26270037130E-01
+ STRESS| 1/3 Trace                                             8.44174762923E+03
+ STRESS| Determinant                                           1.29658191328E+03
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   2.26270037130E-01   2.26270039289E-01   2.53247903476E+04
+ STRESS|      x          -0.000000000011     -0.000000842794      1.000000000000
+ STRESS|      y           0.000012696636      0.999999999919      0.000000842794
+ STRESS|      z           0.999999999919     -0.000012696636     -0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.2     0.01087934        -3.8213328679 -3.82E+00
+     2 OT DIIS     0.80E-01    0.2     0.00545950        -3.8215551713 -2.22E-04
+     3 OT DIIS     0.80E-01    0.2     0.00228359        -3.8216401444 -8.50E-05
+     4 OT DIIS     0.80E-01    0.2     0.00026657        -3.8216610322 -2.09E-05
+     5 OT DIIS     0.80E-01    0.2     0.00006607        -3.8216612991 -2.67E-07
+     6 OT DIIS     0.80E-01    0.2     0.00003411        -3.8216613129 -1.38E-08
+     7 OT DIIS     0.80E-01    0.2     0.00000877        -3.8216613170 -4.17E-09
+     8 OT DIIS     0.80E-01    0.2     0.00000149        -3.8216613174 -3.78E-10
+     9 OT DIIS     0.80E-01    0.2     0.00000015        -3.8216613174 -8.45E-12
+
+  *** SCF run converged in     9 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.75558523863339
+  Repulsive potential energy:                                   1.82885426606765
+  Electronic energy:                                            0.10510103661213
+  DFTB3 3rd order energy:                                       0.00010458608223
+  Dispersion energy:                                           -0.00013596753740
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                -3.82166131740878
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]             -3.821661317408831
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        2.01909235540E+04   2.44786745174E-04  -3.00117899305E-14
+ STRESS|      y        2.44786745174E-04   2.28054444132E-01   2.90023067438E-15
+ STRESS|      z       -3.00117899305E-14   2.90023067438E-15   2.28054444128E-01
+ STRESS| 1/3 Trace                                             6.73045988765E+03
+ STRESS| Determinant                                           1.05010630030E+03
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   2.28054444128E-01   2.28054444129E-01   2.01909235540E+04
+ STRESS|      x           0.000000000056     -0.000000012124      1.000000000000
+ STRESS|      y          -0.004591893231      0.999989457203      0.000000012124
+ STRESS|      z           0.999989457203      0.004591893231     -0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.2     0.00049043        -4.3508046200 -4.35E+00
+     2 OT DIIS     0.80E-01    0.2     0.00033040        -4.3508051319 -5.12E-07
+     3 OT DIIS     0.80E-01    0.2     0.00008591        -4.3508055728 -4.41E-07
+     4 OT DIIS     0.80E-01    0.2     0.00002025        -4.3508056014 -2.86E-08
+     5 OT DIIS     0.80E-01    0.2     0.00000475        -4.3508056033 -1.85E-09
+     6 OT DIIS     0.80E-01    0.2     0.00000117        -4.3508056034 -9.97E-11
+     7 OT DIIS     0.80E-01    0.2     0.00000029        -4.3508056034 -7.15E-12
+
+  *** SCF run converged in     7 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.75113337107314
+  Repulsive potential energy:                                   1.29701833974741
+  Electronic energy:                                            0.10334651372223
+  DFTB3 3rd order energy:                                       0.00009892952925
+  Dispersion energy:                                           -0.00013601531385
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                -4.35080560338809
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]             -4.350805603388385
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        1.64342493746E+04  -1.97292000152E-04   1.00176141195E-14
+ STRESS|      y       -1.97292000152E-04   2.29957560829E-01  -5.64184760689E-15
+ STRESS|      z        1.00176141195E-14  -5.64184760689E-15   2.29957560829E-01
+ STRESS| 1/3 Trace                                             5.47823642992E+03
+ STRESS| Determinant                                           8.69050991789E+02
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   2.29957560827E-01   2.29957560829E-01   1.64342493746E+04
+ STRESS|      x           0.000000012005     -0.000000000028      1.000000000000
+ STRESS|      y           0.999997217251     -0.002359129094     -0.000000012005
+ STRESS|      z           0.002359129094      0.999997217251      0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.2     0.00020684        -4.7077705588 -4.71E+00
+     2 OT DIIS     0.80E-01    0.2     0.00009562        -4.7077706368 -7.80E-08
+     3 OT DIIS     0.80E-01    0.2     0.00003896        -4.7077706612 -2.44E-08
+     4 OT DIIS     0.80E-01    0.2     0.00000424        -4.7077706669 -5.64E-09
+     5 OT DIIS     0.80E-01    0.2     0.00000040        -4.7077706669 -5.64E-11
+
+  *** SCF run converged in     5 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.74655039189718
+  Repulsive potential energy:                                   0.93723477930604
+  Electronic energy:                                            0.10158732025411
+  DFTB3 3rd order energy:                                       0.00009375670003
+  Dispersion energy:                                           -0.00013613127224
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                -4.70777066690923
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]             -4.707770666909891
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        1.35113498547E+04   2.36417028256E-04  -2.42353467253E-14
+ STRESS|      y        2.36417028256E-04   2.32038340437E-01  -3.38092949229E-15
+ STRESS|      z       -2.42353467253E-14  -3.38092949229E-15   2.32038340437E-01
+ STRESS| 1/3 Trace                                             4.50393797711E+03
+ STRESS| Determinant                                           7.27475280836E+02
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   2.32038340433E-01   2.32038340437E-01   1.35113498547E+04
+ STRESS|      x          -0.000000017498      0.000000000014      1.000000000000
+ STRESS|      y           0.999999665973     -0.000817345839      0.000000017498
+ STRESS|      z           0.000817345839      0.999999665973     -0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.2     0.07552856         9.1115032147  9.11E+00
+     2 OT DIIS     0.80E-01    0.2     0.05045098         9.0993435579 -1.22E-02
+     3 OT DIIS     0.80E-01    0.2     0.00615666         9.0893815264 -9.96E-03
+     4 OT DIIS     0.80E-01    0.2     0.00034979         9.0892742132 -1.07E-04
+     5 OT DIIS     0.80E-01    0.2     0.00014889         9.0892738778 -3.35E-07
+     6 OT DIIS     0.80E-01    0.2     0.00007959         9.0892738256 -5.22E-08
+     7 OT DIIS     0.80E-01    0.2     0.00000560         9.0892738020 -2.36E-08
+     8 OT DIIS     0.80E-01    0.2     0.00000129         9.0892738019 -1.04E-10
+     9 OT DIIS     0.80E-01    0.2     7.4318E-09         9.0892738019 -5.37E-12
+
+  *** SCF run converged in     9 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.77166834181905
+  Repulsive potential energy:                                  14.75014825309607
+  Electronic energy:                                            0.11079800106326
+  DFTB3 3rd order energy:                                       0.00013182584031
+  Dispersion energy:                                           -0.00013593631443
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                 9.08927380186615
+
+ ENERGY| Total FORCE_EVAL ( QS ) energy [hartree]              9.089273801866154
+
+ STRESS| Analytical stress tensor [bar]
+ STRESS|                        x                   y                   z
+ STRESS|      x        8.99837489294E+04   8.07751983067E-07  -6.09782039485E-15
+ STRESS|      y        8.07751983067E-07   2.19910248457E-01  -1.03136964698E-14
+ STRESS|      z       -6.09782039485E-15  -1.03136964698E-14   2.19910248457E-01
+ STRESS| 1/3 Trace                                             2.99947295833E+04
+ STRESS| Determinant                                           4.35166065371E+03
+
+ STRESS| Eigenvectors and eigenvalues of the analytical stress tensor [bar]
+ STRESS|                        1                   2                   3
+ STRESS| Eigenvalues   2.19910248457E-01   2.19910248457E-01   8.99837489294E+04
+ STRESS|      x          -0.000000000006     -0.000000000006      1.000000000000
+ STRESS|      y           0.707106781187      0.707106781187      0.000000000009
+ STRESS|      z           0.707106781187     -0.707106781187     -0.000000000000
+
+ Extrapolation method: ASPC
+
+ Number of electrons:                                                          8
+ Number of occupied orbitals:                                                  4
+ Number of molecular orbitals:                                                 4
+
+ Number of orbital functions:                                                  8
+ Number of independent orbital functions:                                      8
+
+
+ SCF WAVEFUNCTION OPTIMIZATION
+
+  ----------------------------------- OT ---------------------------------------
+  Minimizer      : DIIS                : direct inversion
+                                         in the iterative subspace
+                                         using   7 DIIS vectors
+                                         safer DIIS on
+  Preconditioner : FULL_SINGLE_INVERSE : inversion of 
+                                         H + eS - 2*(Sc)(c^T*H*c+const)(Sc)^T
+  Precond_solver : DEFAULT
+  stepsize       :    0.08000000                  energy_gap     :    0.10000000
+  eps_taylor     :   0.10000E-15                  max_taylor     :             4
+  ----------------------------------- OT ---------------------------------------
+
+  Step     Update method      Time    Convergence         Total energy    Change
+  ------------------------------------------------------------------------------
+     1 OT DIIS     0.80E-01    0.2     0.38360908        -5.1785923309 -5.18E+00
+     2 OT DIIS     0.80E-01    0.2     0.18404783        -5.3551402901 -1.77E-01
+     3 OT DIIS     0.80E-01    0.2     0.09968480        -5.3923957809 -3.73E-02
+     4 OT SD       0.80E-01    0.2     0.10478236        -5.4179561588 -2.56E-02
+     5 OT SD       0.80E-01    0.2     0.17840611        -5.4549753501 -3.70E-02
+     6 OT SD       0.80E-01    0.2     0.33777559        -5.5715367876 -1.17E-01
+     7 OT SD       0.80E-01    0.2     0.72640257        -6.0192283574 -4.48E-01
+     8 OT SD       0.80E-01    0.4     2.12636683        -8.5181344393 -2.50E+00
+     9 OT SD       0.80E-01    0.3    10.30389949       -28.6880937546 -2.02E+01
+    10 OT DIIS     0.80E-01    0.2    10.98723787       -44.6244834769 -1.59E+01
+    11 OT SD       0.80E-01    0.2     0.06136500        -5.4071283235  3.92E+01
+    12 OT DIIS     0.80E-01    0.2     0.04251560        -5.4098534847 -2.73E-03
+    13 OT DIIS     0.80E-01    0.2     0.01747148        -5.4113859205 -1.53E-03
+    14 OT SD       0.80E-01    0.2     0.01283580        -5.4117831260 -3.97E-04
+    15 OT DIIS     0.80E-01    0.2     0.00682891        -5.4121032852 -3.20E-04
+    16 OT DIIS     0.80E-01    0.2     0.00114901        -5.4122251636 -1.22E-04
+    17 OT DIIS     0.80E-01    0.2     0.00059317        -5.4122261543 -9.91E-07
+    18 OT DIIS     0.80E-01    0.2     0.00033713        -5.4122265002 -3.46E-07
+    19 OT DIIS     0.80E-01    0.2     0.00008107        -5.4122266498 -1.50E-07
+    20 OT DIIS     0.80E-01    0.2     0.00003388        -5.4122266617 -1.19E-08
+    21 OT DIIS     0.80E-01    0.2     0.00001777        -5.4122266622 -5.04E-10
+    22 OT DIIS     0.80E-01    0.2     0.00000424        -5.4122266630 -8.02E-10
+    23 OT DIIS     0.80E-01    0.2     0.00000110        -5.4122266631 -1.59E-11
+    24 OT DIIS     0.80E-01    0.2     0.00000037        -5.4122266631 -3.98E-12
+
+  *** SCF run converged in    24 steps ***
+
+
+  Core Hamiltonian energy:                                     -5.63699202387352
+  Repulsive potential energy:                                   0.10545728016679
+  Electronic energy:                                            0.11938521520242
+  DFTB3 3rd order energy:                                       0.00002557827606
+  Dispersion energy:                                           -0.00010271284129
+  Correction for halogen bonding:                               0.00000000000000
+
+  Total energy:                                                -5.41222666306954
+
+  **** **** ******  **  PROGRAM STARTED AT               2026-07-16 14:57:07.007
+ ***** ** ***  *** **   PROGRAM STARTED ON                       DESKTOP-D79QQVM
+ **    ****   ******    PROGRAM STARTED BY                               fh22600
+ ***** **    ** ** **   PROGRAM PROCESS ID                                 83008
+  **** **  *******  **  PROGRAM STARTED IN /home/fh22600/research-project-2026/F
+                                           F_model/train_generation
+
+ CP2K| version string:                                       CP2K version 2026.1
+ CP2K| source code revision number:                                      aceff1c
+ CP2K| cp2kflags: omp libint fftw3 libxc parallel scalapack mpi_f08 cosma xsmm p
+ CP2K|            lumed2 spglib sirius libtorch hdf5 trexio
+ CP2K| is freely available from                            https://www.cp2k.org/
+ CP2K| Program compiled at                                   2026-06-16 16:35:48
+ CP2K| Program compiled on                                                      
+ CP2K| Program compiled for                                               x86_64
+ CP2K| Data directory path    /home/fh22600/miniforge3/envs/cp2k_env/share/cp2k/
+ CP2K| Input file name                                                  cp2k.inp
+
+ GLOBAL| Force Environment number                                              1
+ GLOBAL| Basis set file name                                        BASIS_MOLOPT
+ GLOBAL| Potential file name                                           POTENTIAL
+ GLOBAL| MM Potential file name                                     MM_POTENTIAL
+ GLOBAL| Coordinate file name                               water_sampling_1.xyz
+ GLOBAL| Method name                                                        CP2K
+ GLOBAL| Project name                                                       cp2k
+ GLOBAL| Run type                                                   ENERGY_FORCE
+ GLOBAL| FFT library                                                       FFTW3
+ GLOBAL| Diagonalization library                                       ScaLAPACK
+ GLOBAL| Cholesky decomposition library                                ScaLAPACK
+ GLOBAL| DGEMM library                                                      BLAS
+ GLOBAL| Orthonormality check for eigenvectors                          DISABLED
+ GLOBAL| Matrix multiplication library                                     COSMA
+ GLOBAL| All-to-all communication in single precision                          F
+ GLOBAL| FFTs using library dependent lengths                                  F
+ GLOBAL| Grid backend                                                       AUTO
+ GLOBAL| Global print level                                                  LOW
+ GLOBAL| MPI I/O enabled                                                       T
+ GLOBAL| Total number of message passing processes                             1
+ GLOBAL| Number of distributed systems (nodes)                                 1
+ GLOBAL| Number of threads for this process                                    8
+ GLOBAL| This output is from process                                           0
+ GLOBAL| OpenMP stack size per thread (OMP_STACKSIZE)                    default
+ GLOBAL| CPU model name                        AMD Ryzen AI 5 340 w/ Radeon 840M
+ GLOBAL| CPUID                                                              1003
+ GLOBAL| Compiled for CPUID                                                 1002
+
+ *** HINT in environment.F:960 :: The compiler target flags (x86_avx2)     ***
+ *** used to build this binary cannot exploit all extensions of this CPU   ***
+ *** model (x86_avx512). Consider compiler target flags as part of FCFLAGS ***
+ *** and CFLAGS (ARCH file).                                               ***
+
+
+ MEMORY| system memory details [Kb]
+ MEMORY|                        rank 0           min           max       average
+ MEMORY| MemTotal             10183308      10183308      10183308      10183308
+ MEMORY| MemFree                 88888         88888         88888         88888
+ MEMORY| Buffers                  9988          9988          9988          9988
+ MEMORY| Cached                 734392        734392        734392        734392
+ MEMORY| Slab                   139828        139828        139828        139828
+ MEMORY| SReclaimable            44548         44548         44548         44548
+ MEMORY| MemLikelyFree          877816        877816        877816        877816
+
+
+ *** WARNING in atoms_input.F:123 :: Overwriting coordinates. Active    ***
+ *** coordinates read from &COORD section. Active coordinates READ from ***
+ *** &COORD section                                                     ***
+
+
+ GENERATE|  Preliminary Number of Bonds generated:                             0
+ GENERATE|  Achieved consistency in connectivity generation.
+
+ *** WARNING in qs_kind_types.F:2324 :: Information provided in the input ***
+ *** file regarding POTENTIAL for KIND <O> will be ignored!               ***
+
+
+ *** WARNING in qs_kind_types.F:2330 :: Information provided in the input ***
+ *** file regarding BASIS for KIND <O> will be ignored!                   ***
+
+
+ *** WARNING in qs_kind_types.F:2324 :: Information provided in the input ***
+ *** file regarding POTENTIAL for KIND <H> will be ignored!               ***
+
+
+ *** WARNING in qs_kind_types.F:2330 :: Information provided in the input ***
+ *** file regarding BASIS for KIND <H> will be ignored!                   ***
+

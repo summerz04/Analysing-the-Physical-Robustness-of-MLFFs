@@ -1,0 +1,41 @@
+
+
+&GLOBAL 
+    PROJECT h2o_singlepoints 
+    RUN_TYPE ENERGY_FORCE
+    PRINT_LEVEL MEDIUM 
+&END_GLOBAL 
+                                                        
+&FORCE_EVAL
+  &DFT
+    &QS
+      METHOD xTB
+      &XTB
+        CHECK_ATOMIC_CHARGES F
+        COULOMB_INTERACTION T
+        DO_EWALD T
+      &END XTB
+    &END QS
+    &SCF
+      SCF_GUESS ATOMIC
+      EPS_SCF 1.0E-6
+      &OT
+        MINIMIZER DIIS
+        ENERGY_GAP 0.1
+        PRECONDITIONER FULL_SINGLE_INVERSE
+      &END OT
+    &END SCF
+
+    CHARGE 0 
+    MULTIPLICITY 1
+  &END DFT
+  &SUBSYS
+    &CELL
+        ABC 20.0 20.0 20.0
+        PERIODIC NONE 
+    &TOPOLOGY
+        COORD_FILE_FORMAT XYZ
+        COORD_FILE_NAME water_sampling_1.xyz
+    &END TOPOLOGY
+  &END SUBSYS
+&END FORCE_EVAL

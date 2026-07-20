@@ -1,0 +1,28 @@
+
+ Possible matches for unknown subsection 
+
+ END_GLOBAL
+
+   enum ELPA in section %__ROOT__%GLOBAL for keyword PREFERRED_DIAG_LIBRARY score:  103
+   enum DLAF in section %__ROOT__%GLOBAL for keyword PREFERRED_DIAG_LIBRARY score:  103
+   enum DLAF in section %__ROOT__%GLOBAL for keyword PREFERRED_CHOLESKY_LIBRARY score:  103
+   enum ENERGY in section %__ROOT__%GLOBAL for keyword RUN_TYPE score:  103
+   enum SPLA in section %__ROOT__%GLOBAL for keyword PREFERRED_DGEMM_LIBRARY score:  102
+
+ *******************************************************************************
+ *   ___                                                                       *
+ *  /   \                                                                      *
+ * [ABORT]                                                                     *
+ *  \___/             unknown subsection END_GLOBAL of section GLOBAL          *
+ *    |                                                                        *
+ *  O/|                                                                        *
+ * /| |                                                                        *
+ * / \                                               input/input_parsing.F:192 *
+ *******************************************************************************
+
+
+ ===== Routine Calling Stack ===== 
+
+            3 section_vals_parse
+            2 section_vals_parse
+            1 read_input
