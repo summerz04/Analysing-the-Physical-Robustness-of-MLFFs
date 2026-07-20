@@ -111,21 +111,21 @@ class WedgeMLP(nn.Module):
     def __init__(self):
         super().__init__()
         self.node_net = nn.Sequential(
-            nn.Linear(1, 64), nn.Tanh(), 
-            nn.Linear(64,64),nn.Tanh(), 
-            nn.Linear(64,4), nn.Tanh(),
+            nn.Linear(1, 64), nn.Mish(), 
+            nn.Linear(64,64),nn.Mish(), 
+            nn.Linear(64,4), nn.Mish(),
              nn.Linear(4,1)
         )
         self.edge_net = nn.Sequential(
-            nn.Linear(2, 64), nn.Tanh(), 
-            nn.Linear(64,64), nn.Tanh(), 
-            nn.Linear(64,4),nn.Tanh(),
+            nn.Linear(2, 64), nn.Mish(), 
+            nn.Linear(64,64), nn.Mish(), 
+            nn.Linear(64,4),nn.Mish(),
             nn.Linear(4,1)
         )
         self.triplet_net = nn.Sequential(
-            nn.Linear(1, 64), nn.Tanh(), 
-            nn.Linear(64,64),nn.Tanh(), 
-            nn.Linear(64,4), nn.Tanh(),
+            nn.Linear(1, 64), nn.Mish(), 
+            nn.Linear(64,64),nn.Mish(), 
+            nn.Linear(64,4), nn.Mish(),
              nn.Linear(4,1)
         )
 
@@ -195,32 +195,34 @@ class ConvNet(nn.Module):
 
         # node features are treated with mlp 
         self.node_net = nn.Sequential(
-            nn.Linear(1, 8), nn.Tanh(), 
+            nn.Linear(1, 8), nn.Mish(), 
             nn.Linear(8,16),
              
-             nn.Tanh(), 
+             nn.Mish(), 
             nn.Linear(16,8),
             
-               nn.Tanh(),
-             nn.Linear(8,4), nn.Tanh(),
+               nn.Mish(),
+             nn.Linear(8,4), nn.Mish(),
              nn.Linear(4,1)
         )
         # edges are treated with conv layers
         self.edge_conv = nn.Sequential(
             nn.Conv1d(in_channels=2, out_channels=4, kernel_size=1),
-            nn.Tanh(),
-            nn.Conv1d(in_channels=4, out_channels=1, kernel_size=1),
+            nn.Mish(),
+            nn.Conv1d(in_channels=4, out_channels=8, kernel_size=1),
+            nn.Mish(),
+            nn.Conv1d(in_channels=8, out_channels=1, kernel_size=1)
 
         )
         self.triplet_net = nn.Sequential(
-            nn.Linear(1, 8), nn.Tanh(), 
+            nn.Linear(1, 8), nn.Mish(), 
             nn.Linear(8,16),
             
-               nn.Tanh(), 
+               nn.Mish(), 
             nn.Linear(16,8),
              
-               nn.Tanh(),
-             nn.Linear(8,4), nn.Tanh(),
+               nn.Mish(),
+             nn.Linear(8,4), nn.Mish(),
              nn.Linear(4,1)
         )
         self.to(device)
@@ -688,7 +690,7 @@ def plot_force_losses(train_force_losses, test_force_losses, model_name):
 #-------------------------------------
 
 
-def train_all(model_name, model_class, train_loader, test_loader, epochs=100, lr=1e-4):
+def train_all(model_name, model_class, train_loader, test_loader, epochs=500, lr=1e-4):
     print(f'Training {model_name} model...')
     model = model_class()
     model_filename = f'{model_name}_xtb.pt'
