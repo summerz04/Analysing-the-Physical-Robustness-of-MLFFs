@@ -16,6 +16,10 @@ from ase.io import read
 from ase.io.trajectory import Trajectory
 from ase.geometry import get_distances
 
+# calculating model metrics 
+from sklearn.metrics import mean_absolute_error
+from sklearn.metrics import mean_squared_error
+
 """
 WedgeForceField:
 - Variable‑size molecules (2, 3, ..., N atoms).
@@ -536,7 +540,7 @@ def collate_fn(batch):
             E_total_batch, F_batch, N_batch, elements_batch, cellsize_batch)
 
 
-def train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs):
+def train_model_energy_forces(model, train_loader, valid_loader, optimizer, epochs):
     # monitor energy and forces separately
     train_energy_losses = []
     train_force_losses = []
@@ -615,7 +619,7 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
         with torch.enable_grad():
             # force evaluation 
             for (node_batch, edge_batch, triplet_batch, pos_batch,
-                    E_total_tar,F_tar, N_batch, elements_batch, cellsize_batch) in test_loader:
+                    E_total_tar,F_tar, N_batch, elements_batch, cellsize_batch) in valid_loader:
                 batch_size = len(E_total_tar)
 
                 batch_energy_loss = 0.0
@@ -645,8 +649,8 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
                 test_epoch_energy += batch_energy_loss / batch_size
                 test_epoch_force += batch_force_loss / batch_size
 
-            avg_test_energy = test_epoch_energy / len(test_loader)
-            avg_test_force = test_epoch_force / len(test_loader)
+            avg_test_energy = test_epoch_energy / len(valid_loader)
+            avg_test_force = test_epoch_force / len(valid_loader)
 
             test_energy_losses.append(avg_test_energy.detach().cpu().item())
             test_force_losses.append(avg_test_force.detach().cpu().item())
@@ -690,7 +694,7 @@ def plot_force_losses(train_force_losses, test_force_losses, model_name):
 #-------------------------------------
 
 
-def train_all(model_name, model_class, train_loader, test_loader, epochs=500, lr=1e-4):
+def train_all(model_name, model_class, train_loader, valid_loader, epochs=500, lr=1e-4):
     print(f'Training {model_name} model...')
     model = model_class()
     model_filename = f'{model_name}_xtb.pt'
@@ -704,7 +708,7 @@ def train_all(model_name, model_class, train_loader, test_loader, epochs=500, lr
 
     # add message passing 
 
-    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs)
+    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, valid_loader, optimizer, epochs)
     model.save(model_filename)
 
     return {
@@ -726,6 +730,78 @@ def plot_comparison(results, key, ylabel, filename):
     plt.savefig(f'../training_figs/{filename}', dpi=150, bbox_inches='tight')
     plt.close()
     print('Finished plotting')
+
+# testing function 
+def test_models(model_name, model, test_loader):
+    
+    # evaluate models
+    model.eval()
+
+    all_E_actual = []
+    all_E_pred = []
+
+    all_F_actual = []
+    all_F_pred = []
+
+    with torch.enable_grad():
+        for (node_batch, edge_batch, triplet_batch, pos_batch,
+            E_total_tar, F_tar, N_batch, elements_batch, cellsize_batch) in test_loader:
+
+            batch_size = len(E_total_tar)
+
+            for i in range(batch_size):
+                node_i = node_batch[i]
+                cell_i = cellsize_batch[i]
+                elements_i = elements_batch[i]
+                F_tar_i = F_tar[i]
+
+                pos_i = pos_batch[i].clone().detach().requires_grad_(True)
+
+                edge_i = edge_features_torch(pos_i, elements_i, cell_i)
+                trip_i = triplet_features_torch(edge_i)
+
+                E_pred = model.forward_energy(node_i, edge_i, trip_i)
+
+                grads = torch.autograd.grad(E_pred, pos_i, create_graph=False)[0]
+                F_pred = -grads
+
+                # saving results
+                all_E_actual.append(E_total_tar[i].item())
+                all_E_pred.append(E_pred.detach().cpu().item())
+
+                all_F_actual.append(F_tar_i.detach().cpu().numpy())
+                all_F_pred.append(F_pred.detach().cpu().numpy())
+    
+    all_E_actual = np.array(all_E_actual)
+    all_E_pred = np.array(all_E_pred)
+
+    all_F_actual_flat = np.concatenate([f.flatten() for f in all_F_actual])
+    all_F_pred_flat = np.concatenate([f.flatten() for f in all_F_pred])
+
+    # calculate MAE energy + force
+    mae_energy = mean_absolute_error(all_E_actual, all_E_pred)
+    mae_forces = mean_absolute_error(all_F_actual_flat, all_F_pred_flat)
+    
+    # calculate MSE energy + force
+    mse_energy = mean_squared_error(all_E_actual, all_E_pred)
+    mse_forces = mean_squared_error(all_F_actual_flat, all_F_pred_flat)
+
+    print('----------------------------------------------------------')
+    print('Testing results')
+    print('----------------------------------------------------------')
+    print(f'Energy MAE: {mae_energy}, Forces MAE: {mae_forces}')
+    print(f'Energy MSE: {mse_energy}, Forces MSE: {mse_forces}')
+
+    # to a file, save x, actual energy, actual forces, predicted energy, and predicted forces
+    results_filename = f'{model_name}_test_results.npz'
+    np.savez(
+        results_filename,
+        E_actual=all_E_actual,
+        E_pred=all_E_pred,
+        F_actual=np.array(all_F_actual, dtype=object),
+        F_pred=np.array(all_F_pred, dtype=object),
+    )
+    print(f'saved per-sample test results to {results_filename}')
 
 # MAIN EXECUTION
 def main():
@@ -750,8 +826,11 @@ def main():
     N = len(dataset)
     indices = torch.randperm(N)
     train_size = int(0.8 * N)
+    valid_size = int(0.1 * N)
+
     train_idx = indices[:train_size]
-    test_idx  = indices[train_size:]
+    valid_idx  = indices[train_size:train_size + valid_size]
+    test_idx = indices[train_size + valid_size:]
 
     train_loader = DataLoader(
         dataset,
@@ -762,7 +841,16 @@ def main():
         sampler=SubsetRandomSampler(train_idx)
     )
 
-    test_loader  = DataLoader(
+    valid_loader  = DataLoader(
+        dataset,
+        batch_size=32,
+        collate_fn=collate_fn,
+        shuffle=False,
+        num_workers=0,
+        sampler=SubsetRandomSampler(valid_idx)
+    )
+
+    test_loader = DataLoader(
         dataset,
         batch_size=32,
         collate_fn=collate_fn,
@@ -774,15 +862,15 @@ def main():
     print("Beginning to train models...")
 
     models = {
-    'MLP': WedgeMLP,
-    'Convolutional': ConvNet
+    'MLP': WedgeMLP
+    #'Convolutional': ConvNet
     #Message Passing': MP_MLP
     }
     
     results ={}
 
     for name, mlff in models.items():
-        results[name] = train_all(name, mlff, train_loader, test_loader, epochs=100)
+        results[name] = train_all(name, mlff, train_loader, valid_loader, epochs=250)
 
    
         print(f'Done training {name}')
@@ -797,52 +885,7 @@ def main():
 
     # leave for now 
     # 5. Single‑molecule test (H2O equilibrium)
-    """pos_test = read('water_test.xyz')
-    els = ['O','H','H']
     
-    # extract real energy from xyz 
-    node_feats = np.array([log_primes[el] for el in els])[:, None]
-    node_t = torch.tensor(node_feats, dtype=torch.float32, device=device)
-
-    edge_feats = get_edge_features(els, pos_test)[0]
-    
-
-    edge_t = torch.tensor(edge_feats, dtype=torch.float32, device=device)
-
-    wedges = wedge_product(edge_feats)
-    if len(wedges) > 0:
-        trip_t = torch.tensor(wedges[:, None], dtype=torch.float32, device=device)
-    else:
-        trip_t = torch.zeros(1, 1, dtype=torch.float32, device=device)
-
-    pos_t = torch.tensor(pos_test, dtype=torch.float32, device=device, requires_grad=True)
-
-    model.eval()
-    with torch.no_grad():
-        total_E_pred = model.forward_energy(node_t, edge_t, trip_t)
-        E_per_atom_pred = model.energy_per_atom(node_t, edge_t, trip_t)
-        total_E_actual, forces_pred = model.energy_and_forces(node_t, edge_t, trip_t, pos_t)
-
-    total_E_np = total_E_pred.cpu().item()
-    E_per_atom_np = E_per_atom_pred.cpu().item()
-    forces_np = forces_pred.cpu().numpy()
-
-    print("\n=== Single‑molecule test (H2O, equilibrium) ===")
-    print(f"Target total energy (LJ):        {target_E:.6f}")
-    print(f"Model total energy:              {total_E_np:.6f}")
-    print(f"Model E_per_atom:                {E_per_atom_np:.6f}")
-    print(f"Model energy error (abs):        {abs(target_E - total_E_np):.6f}")
-
-    print("\nPredicted per‑atom forces (model):")
-    for i, f_pred in enumerate(forces_np):
-        print(f"  Atom {i}: {f_pred[0]:8.5f}, {f_pred[1]:8.5f}, {f_pred[2]:8.5f}")
-
-    print(f"\nModel force balance (sum): {forces_np.sum(axis=0)}")
-    print(f"LJ force balance (sum):    {target_F.sum(axis=0)}")
-
-    F_rmse = np.sqrt(((forces_np - target_F)**2).mean())
-    print(f"\nForce RMSE (per‑atom): {F_rmse:.6f}")
-"""
 
 if __name__ == "__main__":
     main()
