@@ -9,6 +9,7 @@ import matplotlib.pyplot
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
+import torch.optim.lr_scheduler as lr_scheduler
 
 from torch_geometric.nn import MessagePassing
 from ase import Atoms 
@@ -144,7 +145,7 @@ class MoleculeMessagePassing(MessagePassing):
     def update(self, aggregated_out, x):
         return x + self.update_mlp(torch.cat([x, aggregated_out], dim=-1))
 
-# Linear MLP MODEL: energy + per atom forces
+# Message passing algorithm + mlp: energy + per atom forces
 class MP_MLP(nn.Module):
    
     def __init__(self):
@@ -301,12 +302,15 @@ def edge_features_torch(pos_t, elements, cell_size, cutoff: float = 4.0):
 
     dists = torch.norm(diff, dim=-1)
     mask = dists < cutoff 
-    dists = dists[mask] # applying cutoff for meaningful distances
+
+    # apply mask to indexes and distances
+    i_idx = i_idx[mask]
+    j_idx = j_idx[mask]
+    dists = dists[mask] 
     
     log_prods = torch.tensor([log_primes[elements[i]] + log_primes[elements[j]]
                          for i, j in zip(i_idx.tolist(), j_idx.tolist())], dtype=pos_t.dtype)
     
-    log_prods = log_prods[mask]
     edge_features = torch.stack((log_prods, dists), dim=1)
     edge_idx = torch.stack([i_idx, j_idx], dim=0)
     
@@ -354,7 +358,7 @@ def collate_fn(batch):
             E_total_batch, F_batch, N_batch, elements_batch, cellsize_batch)
 
 
-def train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs):
+def train_model_energy_forces(model, train_loader, test_loader, epochs, optimizer, scheduler):
     # monitor energy and forces separately
     train_energy_losses = []
     train_force_losses = []
@@ -418,6 +422,10 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
 
             epoch_energy_loss += energy_loss.item()
             epoch_force_loss += force_loss.item()
+
+        before_lr = optimizer.param_groups[0]['lr']
+        scheduler.step()
+        after_lr = optimizer.param_groups[0]['lr']
 
         avg_energy_loss = epoch_energy_loss / len(train_loader)
         avg_force_loss = epoch_force_loss / len(train_loader)
@@ -520,10 +528,11 @@ def train_all(model_name, model_class, train_loader, test_loader, epochs=250, lr
         model.load_state_dict(torch.load(model_filename, map_location=device))
         
     optimizer = optim.Adam(model.parameters(), lr)
+    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.5, total_iters=30)
 
     # add message passing 
 
-    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs)
+    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, epochs, optimizer, scheduler)
     model.save(model_filename)
 
     return {
@@ -594,8 +603,6 @@ def main():
 
     models = {
     'MP': MP_MLP
-    #'Convolutional':ConvNet,
-    #Message Passing': MP_MLP
     }
 
     results ={}
@@ -611,8 +618,8 @@ def main():
         plot_force_losses(result['train_force'], result['test_force'], name)
     
     # compare between plots
-    plot_comparison(results, key='test_energy', ylabel='Energy Loss', filename='energy_comparison.png')
-    plot_comparison(results, key='test_force', ylabel='Force Loss', filename='force_comparison.png')
+    #plot_comparison(results, key='test_energy', ylabel='Energy Loss', filename='energy_comparison.png')
+    #plot_comparison(results, key='test_force', ylabel='Force Loss', filename='force_comparison.png')
 
 
 if __name__ == "__main__":

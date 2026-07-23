@@ -10,6 +10,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 
+import torch.optim.lr_scheduler as lr_scheduler
+
 from torch_geometric.nn import MessagePassing
 from ase import Atoms 
 from ase.io import read
@@ -540,7 +542,7 @@ def collate_fn(batch):
             E_total_batch, F_batch, N_batch, elements_batch, cellsize_batch)
 
 
-def train_model_energy_forces(model, train_loader, valid_loader, optimizer, epochs):
+def train_model_energy_forces(model, train_loader, valid_loader, epochs, optimizer, scheduler):
     # monitor energy and forces separately
     train_energy_losses = []
     train_force_losses = []
@@ -603,6 +605,10 @@ def train_model_energy_forces(model, train_loader, valid_loader, optimizer, epoc
 
             epoch_energy_loss += energy_loss.item()
             epoch_force_loss += force_loss.item()
+
+        before_lr = optimizer.param_groups[0]['lr']
+        scheduler.step()
+        after_lr = optimizer.param_groups[0]['lr']
 
         avg_energy_loss = epoch_energy_loss / len(train_loader)
         avg_force_loss = epoch_force_loss / len(train_loader)
@@ -704,11 +710,11 @@ def train_all(model_name, model_class, train_loader, valid_loader, epochs=500, l
         print(f"Found {model_filename}; loading model.")
         model.load_state_dict(torch.load(model_filename, map_location=device))
         
+
     optimizer = optim.Adam(model.parameters(), lr)
+    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.5, total_iters=30)
 
-    # add message passing 
-
-    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, valid_loader, optimizer, epochs)
+    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, valid_loader, epochs, optimizer, scheduler)
     model.save(model_filename)
 
     return {
@@ -862,8 +868,8 @@ def main():
     print("Beginning to train models...")
 
     models = {
-    'MLP': WedgeMLP
-    #'Convolutional': ConvNet
+    'MLP': WedgeMLP,
+    'Convolutional': ConvNet
     #Message Passing': MP_MLP
     }
     
@@ -871,8 +877,8 @@ def main():
 
     for name, mlff in models.items():
         results[name] = train_all(name, mlff, train_loader, valid_loader, epochs=250)
-
-   
+        test_metrics = test_models(name, results[name]['model'], test_loader)
+        results[name]['test_metrics'] = test_metrics
         print(f'Done training {name}')
 
     for name, result in results.items():

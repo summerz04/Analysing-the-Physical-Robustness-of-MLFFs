@@ -10,6 +10,8 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
 
+import torch.optim.lr_scheduler as lr_scheduler
+
 from torch_geometric.nn import MessagePassing
 from ase import Atoms 
 from ase.io import read
@@ -398,7 +400,7 @@ def collate_fn(batch):
             E_total_batch, F_batch, N_batch, elements_batch, cellsize_batch)
 
 
-def train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs):
+def train_model_energy_forces(model, train_loader, test_loader, epochs, optimizer, scheduler):
     # monitor energy and forces separately
     train_energy_losses = []
     train_force_losses = []
@@ -462,6 +464,10 @@ def train_model_energy_forces(model, train_loader, test_loader, optimizer, epoch
 
             epoch_energy_loss += energy_loss.item()
             epoch_force_loss += force_loss.item()
+        
+        before_lr = optimizer.param_groups[0]['lr']
+        scheduler.step()
+        after_lr = optimizer.param_groups[0]['lr']
 
         avg_energy_loss = epoch_energy_loss / len(train_loader)
         avg_force_loss = epoch_force_loss / len(train_loader)
@@ -553,7 +559,7 @@ def plot_force_losses(train_force_losses, test_force_losses, model_name):
 #-------------------------------------
 
 
-def train_all(model_name, model_class, train_loader, test_loader, epochs=100, lr=1e-4):
+def train_all(model_name, model_class, train_loader, test_loader, epochs=250, lr=1e-4):
     print(f'Training {model_name} model...')
     model = model_class
     model_filename = f'{model_name}_xtb.pt'
@@ -564,8 +570,9 @@ def train_all(model_name, model_class, train_loader, test_loader, epochs=100, lr
         model.load_state_dict(torch.load(model_filename, map_location=device))
         
     optimizer = optim.Adam(model.parameters(), lr)
+    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.5, total_iters=30)
 
-    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, optimizer, epochs)
+    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, epochs, optimizer, scheduler)
     model.save(model_filename)
 
     return {
@@ -633,7 +640,8 @@ def main():
     )
 
     print("Beginning to train...")
-
+    
+    
     models = {
     'Multi-head Attention': AttentionModel(node_dim=1, edge_dim=2, d_model=64, num_heads=4)
     }
@@ -641,6 +649,7 @@ def main():
     results ={}
 
     for name, mlff in models.items():
+        
         results[name] = train_all(name, mlff, train_loader, test_loader)
 
    
@@ -651,8 +660,8 @@ def main():
         plot_force_losses(result['train_force'], result['test_force'], name)
     
     # compare between plots
-    plot_comparison(results, key='test_energy', ylabel='Energy Loss', filename='energy_comparison.png')
-    plot_comparison(results, key='test_force', ylabel='Force Loss', filename='force_comparison.png')
+    #plot_comparison(results, key='test_energy', ylabel='Energy Loss', filename='energy_comparison.png')
+    #plot_comparison(results, key='test_force', ylabel='Force Loss', filename='force_comparison.png')
 
 
 if __name__ == "__main__":
