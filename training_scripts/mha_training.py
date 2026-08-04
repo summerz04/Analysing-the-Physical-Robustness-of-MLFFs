@@ -457,7 +457,7 @@ def train_model_energy_forces(model, train_loader, test_loader, epochs, optimize
             energy_loss = batch_energy_loss / batch_size
             force_loss = batch_force_loss / batch_size 
 
-            total_loss = 0.5*energy_loss + 0.5*force_loss
+            total_loss = energy_loss + (1000*force_loss)
             #print("Running batch loss tracker. E_loss:", loss_E_avg) 
             total_loss.backward()
             optimizer.step()
@@ -527,7 +527,7 @@ def train_model_energy_forces(model, train_loader, test_loader, epochs, optimize
             print(f"Epoch {epoch}: Train Loss = {avg_energy_loss:.4f}")
             print(f"Epoch {epoch}: Train Loss = {avg_force_loss:.4f}")
 
-    model.save('mlp.xtb.pt')
+    model.save('mha_xtb.pt')
     return train_energy_losses, test_energy_losses, train_force_losses, test_force_losses
 
 

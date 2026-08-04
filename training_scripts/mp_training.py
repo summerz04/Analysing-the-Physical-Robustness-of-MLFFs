@@ -9,7 +9,7 @@ import matplotlib.pyplot
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import os
-import torch.optim.lr_scheduler as lr_scheduler
+
 
 from torch_geometric.nn import MessagePassing
 from ase import Atoms 
@@ -152,15 +152,14 @@ class MP_MLP(nn.Module):
         super().__init__()
         self.GNN = MoleculeMessagePassing(node_dim=1,
                                         edge_dim=2, 
-                                        hidden_dim=4,
+                                        hidden_dim=32,
                                         out_dim=1)
 
         self.node_net = nn.Sequential(
-            nn.Linear(3, 16), nn.LeakyReLU(), 
-            nn.Dropout(0.5),
-            nn.Linear(16, 8), nn.LeakyReLU(), 
-            nn.Dropout(0.5),
-            nn.Linear(8, 1)
+            nn.Linear(3, 64), nn.Mish(), 
+            nn.Linear(64, 64), nn.Mish(),
+            nn.Linear(64, 4), nn.Mish(), 
+            nn.Linear(4, 1)
         )
        
         self.to(device)
@@ -358,7 +357,7 @@ def collate_fn(batch):
             E_total_batch, F_batch, N_batch, elements_batch, cellsize_batch)
 
 
-def train_model_energy_forces(model, train_loader, test_loader, epochs, optimizer, scheduler):
+def train_model_energy_forces(model, train_loader, test_loader, epochs, optimizer):
     # monitor energy and forces separately
     train_energy_losses = []
     train_force_losses = []
@@ -415,7 +414,7 @@ def train_model_energy_forces(model, train_loader, test_loader, epochs, optimize
             energy_loss = batch_energy_loss / batch_size
             force_loss = batch_force_loss / batch_size 
 
-            total_loss = 0.5*energy_loss + 0.5*force_loss
+            total_loss = energy_loss + (1000*force_loss)
             #print("Running batch loss tracker. E_loss:", loss_E_avg) 
             total_loss.backward()
             optimizer.step()
@@ -423,9 +422,7 @@ def train_model_energy_forces(model, train_loader, test_loader, epochs, optimize
             epoch_energy_loss += energy_loss.item()
             epoch_force_loss += force_loss.item()
 
-        before_lr = optimizer.param_groups[0]['lr']
-        scheduler.step()
-        after_lr = optimizer.param_groups[0]['lr']
+     
 
         avg_energy_loss = epoch_energy_loss / len(train_loader)
         avg_force_loss = epoch_force_loss / len(train_loader)
@@ -528,11 +525,9 @@ def train_all(model_name, model_class, train_loader, test_loader, epochs=250, lr
         model.load_state_dict(torch.load(model_filename, map_location=device))
         
     optimizer = optim.Adam(model.parameters(), lr)
-    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.5, total_iters=30)
-
     # add message passing 
 
-    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, epochs, optimizer, scheduler)
+    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, test_loader, epochs, optimizer)
     model.save(model_filename)
 
     return {
