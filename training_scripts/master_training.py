@@ -1,518 +1,479 @@
+# Four-way architecture comparison for a water MLFF
+# Optimised for GPU by supervisor, but model frameworks were developed by me
+import json
+import math
+import os
+import random
+import time
+
+import numpy as np
+import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
+import torch.nn.functional as Fn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, SubsetRandomSampler
-import torch.autograd
-import numpy as np
-from scipy.spatial.distance import pdist, squareform
-import matplotlib.pyplot 
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
-import os
-
 import torch.optim.lr_scheduler as lr_scheduler
-
-from torch_geometric.nn import MessagePassing
-from ase import Atoms 
+import torch.utils.checkpoint
+from torch.utils.data import Dataset, DataLoader, Subset, SubsetRandomSampler
 from ase.io import read
-from ase.io.trajectory import Trajectory
-from ase.geometry import get_distances
 
-# calculating model metrics 
-from sklearn.metrics import mean_absolute_error
-from sklearn.metrics import mean_squared_error
+torch.manual_seed(0)
+np.random.seed(0)
+random.seed(0)
 
-"""
-WedgeForceField:
-- Variable‑size molecules (2, 3, ..., N atoms).
-- Each molecule → total energy + per‑atom forces (N, 3).
-- Uses CUDA if available.
-- Train/test: 80/20 via DataLoader.
-- Training: 50% energy vs LJ, 50% per‑atom LJ forces.
-"""
-
-
-# Device selection
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 print(f"Using device: {device}")
 
+# configuration 
+DATASET_PATH = './water_dataset_64.extxyz'
+SPLIT_JSON   = './split.json'      # split saved once, reused by every model/run
+BATCH_SIZE   = 8
+ACCUM_STEPS  = 4                   # 8 x 4 = 32 effective batch
+EPOCHS       = 250
+LR           = 1e-3
+WEIGHT_DECAY = 1e-5
+GRAD_CLIP    = 5.0
+WARMUP_E     = 20                  # energy-only epochs (wake readout + block)
+RAMP_F       = 30                  # epochs to reach full force weight
+ES_PATIENCE  = 50                  # early stop on score (counted only after full ramp)
+CUTOFF_EDGE  = 6.0                 # pairwise range (attention masked to this too)
+CUTOFF_TRIP  = 4.0                 # triplet range (fixed across four models)
+N_RBF        = 16
+FAN_WIDTH    = 16
+D_MODEL      = 64
+EPTFF_REF    = 0.40
 
-# PRIME ENCODING, labelling elements
-prime_assign = {'H': 2, 'O': 7, 'F': 11, 'N': 13, 'C': 17}
-log_primes = {el: np.log(p) for el, p in prime_assign.items()}
+# element embedding
+def _first_n_primes(n):
+    primes, cand = [], 2
+    while len(primes) < n:
+        if all(cand % p for p in primes):
+            primes.append(cand)
+        cand += 1
+    return primes
 
-#  read traj files to use 
-def get_molecular_distances(atoms: Atoms, molecule_indices:list, mic: bool = True):
-    """"""
+ROW_PRIMES = _first_n_primes(7)    # periods 1..7
+COL_PRIMES = _first_n_primes(18)   # groups 1..18
 
-    # get centre of mass for each molecule 
-    coms = []
-    for mol in molecule_indices:
-        com = atoms[mol].get_center_of_mass()
-        coms.append(com)
-    
-    coms = np.array(coms)
+PERIODIC = {'H': (1, 1), 'C': (2, 14), 'N': (2, 15), 'O': (2, 16)}
+LOG_COORDS = {el: (math.log(ROW_PRIMES[p - 1]), math.log(COL_PRIMES[g - 1]))
+              for el, (p, g) in PERIODIC.items()}
+SUPPORTED_ELEMENTS = list(PERIODIC)
 
-    # calculate distance matrix 
-    distances = np.zeros((len(coms), len(coms)))
-    for i in range(len(coms)):
-        for j in range(len(coms)):
-            dist_vec, dist_len = get_distances(coms[i], coms[j], cell=atoms.cell, pbc=atoms.pbc)
-            distances[i, j] = dist_len[0]
+for el, (x, y) in LOG_COORDS.items():
+    print(f"  element {el}: coordinate ({x:.4f}, {y:.4f})")
 
-    return distances 
+# data loading 
 
-
-
-def get_edge_features(atoms: Atoms, elements: list, cutoff: float = 4.0):
-
-    """Edge tokens: [log(p_i*p_j), Q_ij] for i < j.
-    Edge features are stacked with log prods and intermolecular distances"""
-
-    # get atoms object for each frame 
-
-    N = len(elements)
-    if N < 2:
-        return np.empty((0, 2))
-
-    i_idx, j_idx = np.triu_indices(N, k=1)
-
-    # minimum image convention for each pair 
-    mic_dists = np.array([
-        atoms.get_distances(int(i), int(j), mic=True)[0] for i, j in zip(i_idx, j_idx)
-    ])
-    
-    # applying cut off distance 
-    i_idx = i_idx[mic_dists < cutoff]
-    j_idx = j_idx[mic_dists < cutoff]
-
-    mic_dists = mic_dists[mic_dists < cutoff]
-
-    log_prods = np.array([log_primes[elements[i]] + log_primes[elements[j]]
-                         for i, j in zip(i_idx, j_idx)])
-    stacked_dists = np.stack([log_prods, mic_dists], axis=-1)
-
-    return stacked_dists
-
-
-def wedge_product(edge_feats):
-    """Wedge product: wedge(e1,e2) = t1*q2 - q1*t2."""
-    E = len(edge_feats)
-    if E < 2:
-        return np.array([])
-
-    if edge_feats.ndim == 1:
-        edge_feats = edge_feats.reshape(1, 2)
-
-    t, q = edge_feats[:, 0], edge_feats[:, 1]
-    return t[:-1] * q[1:] - q[:-1] * t[1:]
-
-
-# MODEL: energy + per‑atom forces
-class WedgeMLP(nn.Module):
-    """
-    forward_energy: scalar E_total.
-    energy_and_forces: (E_total, forces) with forces = -∇E w.r.t. pos_t.
-    """
-    def __init__(self):
-        super().__init__()
-        self.node_net = nn.Sequential(
-            nn.Linear(1, 64), nn.Mish(), 
-            nn.Linear(64,64),nn.Mish(), 
-            nn.Linear(64,4), nn.Mish(),
-             nn.Linear(4,1)
-        )
-        self.edge_net = nn.Sequential(
-            nn.Linear(2, 64), nn.Mish(), 
-            nn.Linear(64,64), nn.Mish(), 
-            nn.Linear(64,4),nn.Mish(),
-            nn.Linear(4,1)
-        )
-        self.triplet_net = nn.Sequential(
-            nn.Linear(1, 64), nn.Mish(), 
-            nn.Linear(64,64),nn.Mish(), 
-            nn.Linear(64,4), nn.Mish(),
-             nn.Linear(4,1)
-        )
-
-
-
-        self.to(device)
-
-    def forward_energy(self, node_feats, edge_feats, triplets):
-        node_E = self.node_net(node_feats).sum()
-        edge_E = self.edge_net(edge_feats).sum()
-        if len(triplets) > 0:
-            edge_E = edge_E + self.triplet_net(triplets).sum()
-        return node_E + edge_E
-
-    def energy_per_atom(self, node_feats, edge_feats, triplets):
-        total_E = self.forward_energy(node_feats, edge_feats, triplets)
-        N = node_feats.size(0)
-        return total_E / N
-
-    def energy_and_forces(self, node_feats, edge_feats, triplets, pos_t):
-        """
-        pos_t: (N, 3), requires_grad=True.
-        Returns:
-            total_E: scalar
-            forces: (N, 3) = -∂E/∂pos_t
-        """
-        with torch.enable_grad():
-            total_E = self.forward_energy(node_feats, edge_feats, triplets)
-
-            # Explicitly require_grad on pos_t if it ever got detached
-            if pos_t.grad is not None:
-                pos_t.grad.zero_()
-
-            # Compute gradient
-            grad_outputs = torch.ones_like(total_E)
-            grad_list = torch.autograd.grad(
-                outputs=total_E,
-                inputs=pos_t,
-                grad_outputs=grad_outputs,
-                create_graph=False,
-                allow_unused=True
-            )
-
-            if grad_list[0] is None:
-                # Something is wrong; fall back to zeros
-                forces = torch.zeros_like(pos_t)
-            else:
-                forces = -grad_list[0]   # F = -∇E
-
-        return total_E, forces
-    
-    def save(self, filename='model_2.pt'):
-
-        torch.save(self.state_dict(), filename)
-        print(f"Model saved to {filename}")
-
-#----------------
-# convolutional model
-#------------------
-class ConvNet(nn.Module):
-    """
-    forward_energy: scalar E_total.
-    energy_and_forces: (E_total, forces) with forces = -∇E w.r.t. pos_t.
-    """
-    def __init__(self):
-        super().__init__()
-
-        # node features are treated with mlp 
-        self.node_net = nn.Sequential(
-            nn.Linear(1, 8), nn.Mish(), 
-            nn.Linear(8,16),
-             
-             nn.Mish(), 
-            nn.Linear(16,8),
-            
-               nn.Mish(),
-             nn.Linear(8,4), nn.Mish(),
-             nn.Linear(4,1)
-        )
-        # edges are treated with conv layers
-        self.edge_conv = nn.Sequential(
-            nn.Conv1d(in_channels=2, out_channels=4, kernel_size=1),
-            nn.Mish(),
-            nn.Conv1d(in_channels=4, out_channels=8, kernel_size=1),
-            nn.Mish(),
-            nn.Conv1d(in_channels=8, out_channels=1, kernel_size=1)
-
-        )
-        self.triplet_net = nn.Sequential(
-            nn.Linear(1, 8), nn.Mish(), 
-            nn.Linear(8,16),
-            
-               nn.Mish(), 
-            nn.Linear(16,8),
-             
-               nn.Mish(),
-             nn.Linear(8,4), nn.Mish(),
-             nn.Linear(4,1)
-        )
-        self.to(device)
-
-    def forward_energy(self, node_feats, edge_feats, triplets):
-        node_E = self.node_net(node_feats).sum()
-
-        e = edge_feats.T.unsqueeze(0)
-        e = self.edge_conv(e)
-        edge_E = e.sum()
-        if len(triplets) > 0:
-            edge_E = edge_E + self.triplet_net(triplets).sum()
-        return node_E + edge_E
-
-    def energy_per_atom(self, node_feats, edge_feats, triplets):
-        total_E = self.forward_energy(node_feats, edge_feats, triplets)
-        N = node_feats.size(0)
-        return total_E / N
-
-    def energy_and_forces(self, node_feats, edge_feats, triplets, pos_t):
-        """
-        pos_t: (N, 3), requires_grad=True.
-        Returns:
-            total_E: scalar
-            forces: (N, 3) = -∂E/∂pos_t
-        """
-        with torch.enable_grad():
-            total_E = self.forward_energy(node_feats, edge_feats, triplets)
-
-            # Explicitly require_grad on pos_t if it ever got detached
-            if pos_t.grad is not None:
-                pos_t.grad.zero_()
-
-            # Compute gradient
-            grad_outputs = torch.ones_like(total_E)
-            grad_list = torch.autograd.grad(
-                outputs=total_E,
-                inputs=pos_t,
-                grad_outputs=grad_outputs,
-                create_graph=False,
-                allow_unused=True
-            )
-
-            if grad_list[0] is None:
-                # Something is wrong; fall back to zeros
-                forces = torch.zeros_like(pos_t)
-            else:
-                forces = -grad_list[0]   # F = -∇E
-
-        return total_E, forces
-    
-    def save(self, filename='model_conv.pt'):
-
-        torch.save(self.state_dict(), filename)
-        print(f"Model saved to {filename}")
-
-#---------------------------
-# messaging passing
-#---------------------------
-class MoleculeMessagePassing(MessagePassing):
-    def __init__(self, node_dim, edge_dim, hidden_dim, out_dim):
-        super(MoleculeMessagePassing, self).__init__(aggr='add')
-        
-        # 1. encode edge features
-        self.encode_edge = nn.Sequential(
-            nn.Linear(edge_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, hidden_dim)
-        )
-
-        # 2. combining node and edge features to create messages
-        self.message_pass = nn.Sequential(
-        nn.Linear(node_dim + hidden_dim, hidden_dim),
-        nn.SiLU(),
-        nn.Linear(hidden_dim, hidden_dim)
-        )
-
-        # 3. update node representations 
-        self.update_mlp = nn.Sequential(
-            nn.Linear(node_dim + hidden_dim, hidden_dim),
-            nn.SiLU(),
-            nn.Linear(hidden_dim, out_dim)
-        )
-
-    # forward for MESSAGE PASSING
-    def forward(self, x, edge_index, edge_attr):
-        embedded_edge = self.encode_edge(edge_attr)
-        return self.propagate(edge_index, x=x, edge_emb=embedded_edge)
-    
-    # combines neighbour node features with edge features (DISTANCE)
-    def message(self, x_j, edge_emb):
-        # x_j are the node features of neighbours 
-        return self.message_pass(torch.cat([x_j, edge_emb], dim=-1))
-    
-    # return node representations after aggregation
-    def update(self, aggregated_out, x):
-        return x + self.update_mlp(torch.cat([x, aggregated_out], dim=-1))
-
-# Linear MLP MODEL: energy + per atom forces
-class MP_MLP(nn.Module):
-   
-    def __init__(self):
-        super().__init__()
-        self.GNN = MoleculeMessagePassing(node_dim=1,
-                                        edge_dim=1, 
-                                        hidden_dim=4,
-                                        out_dim=1)
-
-        self.node_net = nn.Sequential(
-            nn.Linear(2, 16), nn.LeakyReLU(), 
-            nn.Dropout(0.5),
-            nn.Linear(16, 8), nn.LeakyReLU(), 
-            nn.Dropout(0.5),
-            nn.Linear(8, 1)
-        )
-       
-        self.to(device)
-
-    def forward_energy(self, node_feats, position):
-        # DEFINE PHYSICS BETWEEN 
-        distance_squared = get_molecular_distances(position.cpu().detach().numpy())
-        
-        # DEFINE EDGES, how strongly do atoms interact within a cut off
-        adjacency = torch.from_numpy(np.where(distance_squared < 4, 1.0, 0.0)).float()
-        
-        adjacency = adjacency.to_sparse()
-
-        edge_index, _ = utils.to_edge_index(adjacency)
-        edge_index = edge_index.to(device)
-
-        row, col = edge_index[0], edge_index[1]
-        edge_attr = torch.norm(position[row] - position[col], dim=-1, keepdim=True)
-
-        # message passing
-        new_node_feats = self.GNN(node_feats, edge_index, edge_attr)
-        
-        # combine all features into combined feats
-        combined_feats = torch.cat([node_feats, new_node_feats], dim=1)
-        node_E = self.node_net(combined_feats).sum()
-        return node_E
-    
-    def save(self, filename='edge_attr.pt'):
-
-        torch.save(self.state_dict(), filename)
-        print(f"Model saved to {filename}") 
-
-
-# no need to generate dataset, reading from extxyz file
 def load_from_extxyz(filename):
+    """Load molecular structures and their reference properties from extxyz file
+
+    Parameters:
+    -----------
+        filename: str
+            Path to the extxyz dataset file
+
+    Returns:
+    ---------
+        molecules: list
+            List containing atomic positions, energies, forces, cells and element symbols
     """
-    Reads extended xyz files from ASE simulations
-    and returns molecule data for MLFF training
-    
-    Parameters
-    ----------
-    filename: string 
-        The name of the extended .xyz file
-        
-    Returns
-    --------
-    molecules: tuple 
-        (pos, elements, E_tot, F_atom)
-        A tuple of atomic coordinates ((n, 3) np array), elements (str list),
-        total potential energy and atomic forces ((n, 3) np array)"""
-
     frames = read(filename, index=':')
-
     molecules = []
+    random.shuffle(frames)
     for atoms in frames:
-        # extract elements 
-        elements = atoms.get_chemical_symbols()
-
-        # extract positions, variables to match models 
-        pos = atoms.get_positions()
-
-        # extract total energy 
-        target_Etot = atoms.get_potential_energy()
-
-        # extract atomic forces 
-        F_atom = atoms.get_forces()
-
-        print(elements[0])
-        molecules.append((atoms, pos, elements, target_Etot, F_atom)) # same format as model, with added atoms object per frame
-
-    print(f'Loaded molecules from {filename}')
+        pos_t = torch.tensor(atoms.get_positions(), dtype=torch.float32)
+        E_total = torch.tensor(atoms.get_potential_energy(), dtype=torch.float32)
+        F_atom_t = torch.tensor(atoms.get_forces(), dtype=torch.float32)
+        elements = [atom.symbol for atom in atoms]
+        for el in elements:
+            if el not in LOG_COORDS:
+                raise ValueError(f"Unsupported element {el}; supported: {SUPPORTED_ELEMENTS}")
+        lengths = np.array(atoms.cell.lengths())
+        if atoms.pbc.any() and (lengths > 0).all():
+            cell = lengths
+        else:
+            cell = np.full(3, 1e4)
+        cell_t = torch.tensor(cell, dtype=torch.float32)
+        molecules.append((pos_t, E_total, F_atom_t, cell_t, elements))
+    print(f'Loaded {len(molecules)} frames from {filename}')
     return molecules
 
 
-def molecules_to_tensors(molecules, device):
+def molecules_to_tensors(molecules, dev):
+    """Convert molecular data into PyTorch tensors
+
+    Parameters:
+    --------------
+        molecules: list
+            List of molecular structures and their reference properties
+        dev: torch.device
+            Device used to store the tensors
+
+    Returns:
+    --------
+        samples: list
+            List of molecular data stored as PyTorch tensors
+        targets_E: list
+            List of reference total energies
     """
-    molecules: list of (pos, els, E_total, F_atom).
-
-    Returns list of (node_t, edge_t, trip_t, pos_t, E_total, F_atom_t, N_atoms)
-    for each molecule.
-    """
-    samples = []
-    targets_E = []
-
-
-    for atoms, pos, els, E_total, F_atom in molecules:
-        N = len(els)
-
-        # 1. Node features
-        node_feats = np.array([log_primes[el] for el in els])[:, None]
-        node_t = torch.tensor(node_feats, dtype=torch.float32, device=device)
-
-
-        # 2. Edge features
-        
-        if N >= 2:
-            edge_feats = get_edge_features(atoms, els)
-           
-            if len(edge_feats) == 2:
-                edge_feats = edge_feats.reshape(1, 2)
-            if edge_feats.ndim == 1:
-                edge_feats = np.zeros((0, 2))
-        else:
-            edge_feats = np.zeros((0, 2))
-        edge_t = torch.tensor(edge_feats, dtype=torch.float32, device=device)
-
-        # 3. Triplets
-        wedges = wedge_product(edge_feats)
-        if len(wedges) > 0:
-            trip_t = torch.tensor(wedges[:, None], dtype=torch.float32, device=device)
-        else:
-            trip_t = torch.zeros(1, 1, dtype=torch.float32, device=device)
-
-        # 4. Positions (requires_grad=True)
-        pos_t = torch.tensor(pos, dtype=torch.float32, device=device, requires_grad=True)
-
-        
-        # 5. LJ forces
-        F_atom_t = torch.tensor(F_atom, dtype=torch.float32, device=device)
-
-
-        #6. atoms object cell length
-        cell_t = torch.tensor(atoms.cell.lengths(), dtype=torch.float32, device=device)
-        
-        samples.append((node_t, edge_t, trip_t, pos_t, E_total, F_atom_t, N, els, cell_t))
-        targets_E.append(E_total)
-
+    samples, targets_E = [], []
+    for pos, E_total, F_atom, cell_t, elements in molecules:
+        node_t = torch.tensor([LOG_COORDS[el] for el in elements],
+                              dtype=torch.float32, device=dev)
+        samples.append((node_t, pos.to(dev), E_total, F_atom.to(dev), cell_t.to(dev)))
+        targets_E.append(E_total.item())
     return samples, targets_E
 
+# vectorized pairwise / triplet geometry 
 
-# everything here should be in pytorch 
-def edge_features_torch(pos_t, elements, cell_size, cutoff: float = 4.0):
-    """For autograd to generate forces"""
-    N = len(elements)
-    pairs = torch.triu_indices(row=N, col=N, offset=1) # unique pairs of atom indices
+def build_graph_features(pos, cell,
+                         cutoff_edge=CUTOFF_EDGE, cutoff_trip=CUTOFF_TRIP):
+    """Build pairwise and triplet geometric features for the molecular graph
 
-    
-    i_idx = pairs[0]
-    j_idx = pairs[1]
+        Parameters:
+        ------------
+            pos: torch.Tensor
+                Atomic positions with shape (batch, atoms, 3)
+            cell: torch.Tensor
+                Simulation cell dimensions with shape (batch, 3)
+            cutoff_edge: float
+                Maximum distance used to create pairwise edges in angstroms
+            cutoff_trip: float
+                Maximum distance used to create triplet features in angstroms
 
-    # minimum image convention distance 
-    raw_diff = pos_t[i_idx] - pos_t[j_idx]
-    
-    diff = raw_diff - cell_size * torch.round(raw_diff / cell_size)
+        Returns:
+        -----------
+            dict
+                Dictionary containing edge distances, atom indices, masks and triplet features
+        """
+    B, N, _ = pos.shape
+    dev = pos.device
 
-    dists = torch.norm(diff, dim=-1)
-    mask = dists < cutoff 
-    dists = dists[mask] # applying cutoff for meaningful distances
-    
-    log_prods = torch.tensor([log_primes[elements[i]] + log_primes[elements[j]]
-                         for i, j in zip(i_idx.tolist(), j_idx.tolist())], dtype=pos_t.dtype)
-    
-    log_prods = log_prods[mask]
-    edge_features = torch.stack((log_prods, dists), dim=1)
+    raw = pos.unsqueeze(2) - pos.unsqueeze(1)
+    cell4 = cell[:, None, None, :]
+    R = raw - cell4 * torch.round(raw / cell4)
+    # memory  optimisation
+    del raw
+    D = R.norm(dim=-1)
 
-    return edge_features
-    
-def triplet_features_torch(edge_feats):
-    """Differentiable version: wedge(e1,e2) = t1*q2 - q1*t2."""
-    if edge_feats.shape[0] < 2:
-        return torch.zeros(1, 1, dtype=edge_feats.dtype, device=edge_feats.device)
-    t, q = edge_feats[:, 0], edge_feats[:, 1]
-    wedges = t[:-1] * q[1:] - q[:-1] * t[1:]
-    return wedges.unsqueeze(-1)
+    # Triplets (i, c, j): all angles at central atom c 
+    A = (D < cutoff_trip) & ~torch.eye(N, dtype=torch.bool, device=dev)
+    pairs = torch.triu_indices(N, N, offset=1, device=dev)
+    i_p, j_p = pairs[0], pairs[1]
 
-# DATASET CLASS + COLLATE
+    Tmask = A[:, :, i_p] & A[:, :, j_p]
+    # memory  optimisation
+    del A
+    counts3 = Tmask.sum(dim=(1, 2))
+    b_t, c_t, p_t = Tmask.nonzero(as_tuple=False).unbind(1)
+    # memory  optimisation
+    del Tmask
+    i_t, j_t = i_p[p_t], j_p[p_t]
+
+    v1 = R[b_t, i_t, c_t]
+    v2 = R[b_t, j_t, c_t]
+    d1 = D[b_t, i_t, c_t]
+    d2 = D[b_t, j_t, c_t]
+    dij = D[b_t, i_t, j_t]
+    cos = ((v1 * v2).sum(-1) / (d1 * d2 + 1e-8)).clamp(-1.0, 1.0)
+
+    trip_d = torch.stack([cos, d1, d2, dij], dim=-1)
+    trip_atom = torch.stack([i_t, c_t, j_t], dim=-1)
+
+    tmax = max(int(counts3.max()), 1)
+    sizes = counts3.tolist()
+    trip_d = torch.stack([Fn.pad(t, (0, 0, 0, tmax - t.shape[0]))
+                          for t in trip_d.split(sizes)])
+    trip_atom = torch.stack([Fn.pad(t, (0, 0, 0, tmax - t.shape[0]))
+                             for t in trip_atom.split(sizes)])
+    trip_mask = torch.arange(tmax, device=dev).unsqueeze(0) < counts3.unsqueeze(1)
+
+    # Edges with long cutoff 
+    d_p = D[:, i_p, j_p]
+    emask = d_p < cutoff_edge
+    counts_e = emask.sum(dim=1)
+    b_e, p_e = emask.nonzero(as_tuple=False).unbind(1)
+    del emask
+    edge_d = d_p[b_e, p_e]
+    edge_atom = torch.stack([i_p[p_e], j_p[p_e]], dim=-1)
+    emax = max(int(counts_e.max()), 1)
+    sezs = counts_e.tolist()
+    edge_d = torch.stack([Fn.pad(t, (0, emax - t.shape[0]))
+                          for t in edge_d.split(sezs)])
+    edge_atom = torch.stack([Fn.pad(t, (0, 0, 0, emax - t.shape[0]))
+                             for t in edge_atom.split(sezs)])
+    edge_pid = torch.stack([Fn.pad(t, (0, emax - t.shape[0]))
+                            for t in p_e.split(sezs)])
+    edge_mask = torch.arange(emax, device=dev).unsqueeze(0) < counts_e.unsqueeze(1)
+
+    return {'edge_d': edge_d, 'edge_atom': edge_atom, 'edge_mask': edge_mask,
+            'edge_pid': edge_pid,
+            'trip_d': trip_d, 'trip_atom': trip_atom, 'trip_mask': trip_mask}
+
+# graph helpers 
+# Pair ordering for edges
+def _triu_index(u, v, N):
+    lo = torch.minimum(u, v)
+    hi = torch.maximum(u, v)
+    return lo * (2 * N - lo - 1) // 2 + (hi - lo - 1)
+
+
+def scatter_sum(src, index, B, N):
+    b = torch.arange(B, device=src.device).unsqueeze(1).expand(B, index.shape[1])
+    out = src.new_zeros(B * N, src.shape[-1])
+    out.index_add_(0, (b * N + index).reshape(-1), src.reshape(-1, src.shape[-1]))
+    return out.view(B, N, -1)
+
+
+def scatter_mean(src, index, weight, B, N):
+    w = weight.unsqueeze(-1)
+    num = scatter_sum(src * w, index, B, N) 
+    den = scatter_sum(w, index, B, N)       
+    return num / den.clamp(min=1e-3)
+
+
+def gather_nodes(h, idx):
+    return h.gather(1, idx.unsqueeze(-1).expand(-1, -1, h.shape[-1]))
+
+# basis / cutoff 
+
+def smooth_cutoff(r, rc):
+    x = (r / rc).clamp(max=1.0)
+    s = 0.5 * (1.0 + torch.cos(math.pi * x))
+    return torch.where(r < rc, s, torch.zeros_like(s))
+
+
+class RadialBasis(nn.Module):
+    def __init__(self, r_min, r_max, n_basis):
+        super().__init__()
+        self.register_buffer('centers', torch.linspace(r_min, r_max, n_basis))
+        self.sigma = (r_max - r_min) / max(n_basis - 1, 1)
+
+    def forward(self, r):
+        return torch.exp(-((r.unsqueeze(-1) - self.centers) ** 2)
+                         / (2 * self.sigma ** 2))
+
+# frame-free invariant edge tokens 
+
+class EdgeTokens(nn.Module):
+    def __init__(self, rbf_edge, rbf_trip, fan_width=FAN_WIDTH):
+        super().__init__()
+        self.rbf_edge, self.rbf_trip = rbf_edge, rbf_trip
+        self.fan_width = fan_width
+        n_rbf = rbf_trip.centers.numel()
+        self.psi = nn.Sequential(nn.Linear(1 + n_rbf, fan_width), nn.Mish(),
+                                 nn.Linear(fan_width, fan_width))
+
+    def forward(self, feats, N):
+        d = feats['edge_d']                                    # (B,E)
+        base = torch.cat([torch.ones_like(d).unsqueeze(-1),    # affine carrier
+                          (d * d / (CUTOFF_EDGE * CUTOFF_EDGE)).unsqueeze(-1),
+                          self.rbf_edge(d)], dim=-1)           # (B,E,2+n_rbf)
+
+        B, E = d.shape
+        P = N * (N - 1) // 2
+        pid_map = feats['edge_pid'].new_zeros((B, P))
+        em = feats['edge_mask']
+        bidx = torch.arange(B, device=d.device).unsqueeze(1).expand(B, E)
+        eids = torch.arange(E, device=d.device).unsqueeze(0).expand(B, E) + 1
+        pid_map[bidx[em], feats['edge_pid'][em]] = eids[em]
+
+        a, c, b = feats['trip_atom'].unbind(-1)
+        cos, d1, d2, _ = feats['trip_d'].unbind(-1)
+        psi = self.psi(torch.cat([cos.unsqueeze(-1),
+                                  self.rbf_trip(d1) + self.rbf_trip(d2)], -1))
+        psi = psi * (smooth_cutoff(d1, CUTOFF_TRIP)
+                     * smooth_cutoff(d2, CUTOFF_TRIP)).unsqueeze(-1)
+        psi = psi * feats['trip_mask'].unsqueeze(-1)           # pads -> exactly 0
+
+        fan = d.new_zeros(B, E, self.fan_width)
+        for leg in (a, b):
+            tid = _triu_index(c, leg, N).clamp(min=0)          # pad triplets clamp
+            e0 = pid_map.gather(1, tid)                        # 0 if missing
+            eid = (e0 - 1).clamp(min=0)                        # real legs ALWAYS found:
+                                                               # trip cut 4 <= edge cut 6
+            fan.scatter_add_(1, eid.unsqueeze(-1).expand(-1, -1, self.fan_width), psi)
+        token = torch.cat([base, fan], -1)                     # (B,E,2+n_rbf+fan)
+        return token, psi
+
+# the four context blocks 
+def _small_init_last(seq, std=1e-2):
+    nn.init.normal_(seq[-1].weight, std=std)
+    nn.init.zeros_(seq[-1].bias)
+
+
+class MlpBlock(nn.Module):
+    def __init__(self, d, token_dim, n_rbf, width=96):
+        super().__init__()
+        self.msg = nn.Sequential(nn.Linear(d + token_dim, width), nn.Mish(),
+                                 nn.Linear(width, d))
+        self.upd = nn.Sequential(nn.Linear(2 * d, d), nn.Mish(), nn.Linear(d, d))
+        _small_init_last(self.upd)
+
+    def forward(self, h, feats, token, psi):
+        B, N, _ = h.shape
+        i, j = feats['edge_atom'].unbind(-1)
+        keep = smooth_cutoff(feats['edge_d'], CUTOFF_EDGE) * feats['edge_mask']
+        m = self.msg(torch.cat([gather_nodes(h, j), token], -1))
+        agg = scatter_mean(m, i, keep, B, N)
+        return self.upd(torch.cat([h, agg], -1))
+
+
+class MhaBlock(nn.Module):
+    def __init__(self, d, token_dim, n_rbf, heads=4):
+        super().__init__()
+        assert d % heads == 0
+        self.hd, self.dk, self.d = heads, d // heads, d
+        self.q = nn.Linear(d, d)
+        self.k = nn.Linear(d, d)
+        self.v = nn.Linear(d, d)
+        self.bias = nn.Linear(token_dim, heads)
+        self.proj = nn.Sequential(nn.Linear(d, d), nn.Mish(), nn.Linear(d, d))
+        _small_init_last(self.proj)
+
+    def forward(self, h, feats, token, psi):
+        B, N, D = h.shape
+        i, j = feats['edge_atom'].unbind(-1)
+        keep = smooth_cutoff(feats['edge_d'], CUTOFF_EDGE) * feats['edge_mask']
+        qh = self.q(gather_nodes(h, i)).view(B, -1, self.hd, self.dk)
+        kh = self.k(gather_nodes(h, j)).view(B, -1, self.hd, self.dk)
+        logit = (qh * kh).sum(-1) / math.sqrt(self.dk) + self.bias(token)
+        logit = logit.masked_fill(~feats['edge_mask'].unsqueeze(-1), float('-inf'))
+        a = logit.exp()                                        # pads -> exactly 0
+        den = scatter_sum(a, i, B, N)                          # (B,N,heads)
+        alpha = a / (den.gather(1, i.unsqueeze(-1).expand(-1, -1, self.hd)) + 1e-9)
+        vh = self.v(gather_nodes(h, j)).view(B, -1, self.hd, self.dk)
+        av = (alpha.unsqueeze(-1) * vh) * keep.unsqueeze(-1).unsqueeze(-1)
+        return self.proj(scatter_sum(av.reshape(B, -1, D), i, B, N))
+
+
+class ConvBlock(nn.Module):
+    def __init__(self, d, token_dim, n_rbf, fan_width=FAN_WIDTH, ang_width=48):
+        super().__init__()
+        self.n_rbf, self.fan_width = n_rbf, fan_width
+        self.pair = nn.Sequential(nn.Linear(2 * d + token_dim, d), nn.Mish(),
+                                  nn.Linear(d, d))
+        self.gate = nn.Linear(n_rbf, d)
+        self.ang = nn.Sequential(nn.Linear(3 * d + fan_width, ang_width), nn.Mish(),
+                                 nn.Linear(ang_width, d))
+        self.fuse = nn.Sequential(nn.Linear(2 * d, d), nn.Mish(), nn.Linear(d, d))
+        _small_init_last(self.fuse)
+
+    def forward(self, h, feats, token, psi):
+        B, N, _ = h.shape
+        i, j = feats['edge_atom'].unbind(-1)
+        keep = smooth_cutoff(feats['edge_d'], CUTOFF_EDGE) * feats['edge_mask']
+        hi, hj = gather_nodes(h, i), gather_nodes(h, j)
+        mp = self.pair(torch.cat([hi, hj, token], -1))
+        g = torch.sigmoid(self.gate(token[..., 2:2 + self.n_rbf]))
+        pair_agg = scatter_mean(mp * g, i, keep, B, N) \
+                 + scatter_mean(mp * g, j, keep, B, N)
+
+        it, c, jt = feats['trip_atom'].unbind(-1)
+        d1, d2 = feats['trip_d'][..., 1], feats['trip_d'][..., 2]
+        lenv = (smooth_cutoff(d1, CUTOFF_TRIP)
+                * smooth_cutoff(d2, CUTOFF_TRIP)) * feats['trip_mask']
+        mt = self.ang(torch.cat([gather_nodes(h, it), gather_nodes(h, jt),
+                                 gather_nodes(h, c), psi], -1)) * lenv.unsqueeze(-1)
+        trip_agg = scatter_mean(mt, c, feats['trip_mask'].float(), B, N)
+        return self.fuse(torch.cat([pair_agg, trip_agg], -1))
+
+
+class CombinedBlock(nn.Module):
+    def __init__(self, d, token_dim, n_rbf, fan_width=FAN_WIDTH, heads=4, ang_width=48):
+        super().__init__()
+        self.hd, self.dk, self.d = heads, d // heads, d
+        self.n_rbf = n_rbf
+        self.q = nn.Linear(d, d)
+        self.k = nn.Linear(d, d)
+        self.v = nn.Linear(d, d)
+        self.att_bias = nn.Linear(token_dim, heads)
+        self.gate = nn.Linear(n_rbf, d)
+        self.ang = nn.Sequential(nn.Linear(3 * d + fan_width, ang_width), nn.Mish(),
+                                 nn.Linear(ang_width, d))
+        self.glob = nn.Sequential(nn.Linear(d, d), nn.Mish(), nn.Linear(d, d))
+        self.fuse = nn.Sequential(nn.Linear(4 * d, d), nn.Mish(), nn.Linear(d, d))
+        _small_init_last(self.fuse)
+
+    def forward(self, h, feats, token, psi):
+        B, N, D = h.shape
+        i, j = feats['edge_atom'].unbind(-1)
+        keep = smooth_cutoff(feats['edge_d'], CUTOFF_EDGE) * feats['edge_mask']
+        hi, hj = gather_nodes(h, i), gather_nodes(h, j)
+        qh = self.q(hi).view(B, -1, self.hd, self.dk)
+        kh = self.k(hj).view(B, -1, self.hd, self.dk)
+        logit = (qh * kh).sum(-1) / math.sqrt(self.dk) + self.att_bias(token)
+        logit = logit.masked_fill(~feats['edge_mask'].unsqueeze(-1), float('-inf'))
+        a = logit.exp()                                        # pads -> exactly 0
+        den = scatter_sum(a, i, B, N)
+        alpha = a / (den.gather(1, i.unsqueeze(-1).expand(-1, -1, self.hd)) + 1e-9)
+        vh = self.v(hj).view(B, -1, self.hd, self.dk)
+        av = (alpha.unsqueeze(-1) * vh) * keep.unsqueeze(-1).unsqueeze(-1)
+        attn = scatter_sum(av.reshape(B, -1, D), i, B, N)
+        g = torch.sigmoid(self.gate(token[..., 2:2 + self.n_rbf]))
+        conv = scatter_mean(g * hj, i, keep, B, N) \
+             + scatter_mean(g * hj, j, keep, B, N)
+        it, c, jt = feats['trip_atom'].unbind(-1)
+        d1, d2 = feats['trip_d'][..., 1], feats['trip_d'][..., 2]
+        lenv = (smooth_cutoff(d1, CUTOFF_TRIP)
+                * smooth_cutoff(d2, CUTOFF_TRIP)) * feats['trip_mask']
+        mt = self.ang(torch.cat([gather_nodes(h, it), gather_nodes(h, jt),
+                                 gather_nodes(h, c), psi], -1)) * lenv.unsqueeze(-1)
+        ang = scatter_mean(mt, c, feats['trip_mask'].float(), B, N)
+        glob = self.glob(h.mean(dim=1, keepdim=True)).expand(B, N, D)
+        return self.fuse(torch.cat([attn, conv, ang, glob], -1))
+
+MODELS = {
+    'mlp':  (MlpBlock,  {}),
+    'mha':  (MhaBlock,  {'heads': 4}),
+    'conv': (ConvBlock, {}),
+    'comb': (CombinedBlock, {'heads': 4}),
+}
+
+# model wrapper
+# One complete potential = shared embedder + ONE context block + per-atom
+
+class ForceField(nn.Module):
+    def __init__(self, block_cls, d=D_MODEL, n_rbf=N_RBF, **block_kw):
+        super().__init__()
+        self.rbf_edge = RadialBasis(0.4, CUTOFF_EDGE, n_rbf)
+        self.rbf_trip = RadialBasis(0.4, CUTOFF_TRIP, n_rbf)
+        token_dim = 2 + n_rbf + FAN_WIDTH
+        self.edge_tokens = EdgeTokens(self.rbf_edge, self.rbf_trip)
+        self.embed = nn.Sequential(nn.Linear(2, d), nn.Mish(), nn.Linear(d, d))
+        self.one_body = nn.Linear(2, 1)
+        self.block = block_cls(d, token_dim, n_rbf, **block_kw)
+        self.readout = nn.Sequential(nn.Linear(d, d), nn.Mish(), nn.Linear(d, 1))
+        nn.init.normal_(self.readout[-1].weight, std=1e-2)   # NOT zero (see docstring)
+        nn.init.zeros_(self.readout[-1].bias)
+        nn.init.zeros_(self.one_body.weight)
+        nn.init.zeros_(self.one_body.bias)
+
+    def forward(self, node, pos, cell):
+        feats = build_graph_features(pos, cell) 
+        token, psi = self.edge_tokens(feats, pos.shape[1])
+        h = self.embed(node)
+        if self.training and USE_CHECKPOINT:
+            dh = torch.utils.checkpoint.checkpoint(
+                self.block, h, feats, token, psi, use_reentrant=False)
+        else:
+            dh = self.block(h, feats, token, psi)
+        h = h + dh
+        e_i = self.readout(h).squeeze(-1) + self.one_body(node).squeeze(-1)
+        return e_i.sum(-1) 
+
+#  data pipeline
+
+def collate_fn(batch):
+    return {'node': torch.stack([s['node'] for s in batch]),
+            'pos': torch.stack([s['pos'] for s in batch]),
+            'E_target': torch.stack([s['E_target'] for s in batch]),
+            'F_target': torch.stack([s['F_target'] for s in batch]),
+            'cell': torch.stack([s['cell'] for s in batch])}
+
+
 class EnergyDataset(Dataset):
-    """
-    Each item = (node_t, edge_t, trip_t, pos_t, E_total, F_atom_t, N_atoms).
-    """
     def __init__(self, samples):
         self.samples = samples
 
@@ -520,378 +481,284 @@ class EnergyDataset(Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        return self.samples[idx]
+        node_t, pos_t, E_total, F_atom_t, cell_t = self.samples[idx]
+        return {'node': node_t, 'pos': pos_t, 'E_target': E_total,
+                'F_target': F_atom_t, 'cell': cell_t}
 
 
-def collate_fn(batch):
-    """
-    Returns:
-        node_batch, edge_batch, triplet_batch, pos_batch, E_total_batch, F_batch, N_batch.
-    """
-    node_batch = [b[0] for b in batch]
-    edge_batch = [b[1] for b in batch]
-    triplet_batch = [b[2] for b in batch]
-    pos_batch = [b[3] for b in batch]
-    E_total_batch = torch.tensor([b[4] for b in batch], dtype=torch.float32, device=device)
-    F_batch = [b[5] for b in batch]
-    N_batch = [b[6] for b in batch]
-    elements_batch = [b[7] for b in batch]
-    cellsize_batch =[b[8] for b in batch]
-
-    return (node_batch, edge_batch, triplet_batch, pos_batch,
-            E_total_batch, F_batch, N_batch, elements_batch, cellsize_batch)
+# Split once and lee[ identical data across models and reruns.
+def make_split(n):
+    if os.path.exists(SPLIT_JSON):
+        s = json.load(open(SPLIT_JSON))
+        if s.get('n') == n:
+            print(f"Loaded fixed split from {SPLIT_JSON}")
+            return s['train'], s['val'], s['test']
+    idx = torch.randperm(n).tolist()
+    s = {'n': n,
+         'train': idx[:int(0.8 * n)],
+         'val': idx[int(0.8 * n):int(0.9 * n)],
+         'test': idx[int(0.9 * n):]}
+    json.dump(s, open(SPLIT_JSON, 'w'))
+    print(f"Saved fixed split to {SPLIT_JSON}")
+    return s['train'], s['val'], s['test']
 
 
-def train_model_energy_forces(model, train_loader, valid_loader, epochs, optimizer, scheduler):
-    # monitor energy and forces separately
-    train_energy_losses = []
-    train_force_losses = []
+def compute_predictions(model, batch, need_forces, create_graph=False):
+    node = batch['node'].to(device)
+    pos = batch['pos'].to(device)
+    if need_forces:
+        pos.requires_grad_(True)
+    cell = batch['cell'].to(device)
+    E_tar = batch['E_target'].to(device)
+    F_tar = batch['F_target'].to(device)
 
-    test_energy_losses = []
-    test_force_losses = []
+    E_pred = model(node, pos, cell)
+    f_pred = None
+    if need_forces:
+        f_pred = -torch.autograd.grad(E_pred.sum(), pos, create_graph=create_graph)[0]
+    return E_pred, f_pred, E_tar, F_tar
 
-    last_epoch_loss = 0.0
-    for epoch in range(epochs):
-        # Training
+#  metrics 
+
+def element_ids(node):
+    codes = torch.tensor([LOG_COORDS[el] for el in PERIODIC],
+                         device=node.device, dtype=node.dtype)
+    return (node.unsqueeze(-2) - codes).norm(dim=-1).argmin(-1)
+
+
+def accumulate_force_stats(stats, f_pred, f_tar, node):
+    diff = (f_pred - f_tar).reshape(-1)
+    tgt = f_tar.reshape(-1)
+    stats['sse'] += (diff ** 2).sum().item()
+    stats['fsq'] += (tgt ** 2).sum().item()
+    stats['fsum'] += tgt.sum().item()
+    stats['n'] += tgt.numel()
+    ids = element_ids(node)
+    for k, el in enumerate(PERIODIC):
+        m = ids == k
+        if m.any():
+            stats['el_se'][el] += ((f_pred - f_tar)[m] ** 2).sum().item()
+            stats['el_n'][el] += int(m.sum())
+
+
+def finalize_force_stats(stats):
+    out = {'r2': 1.0 - stats['sse'] / (stats['fsq'] - stats['fsum'] ** 2 / stats['n'])}
+    out['el'] = {el: stats['el_se'][el] / stats['el_n'][el]
+                 for el in PERIODIC if stats['el_n'][el] > 0}
+    return out
+# --------------------------------- training ----------------------------------
+
+def _train(name, cls, kw, dataset, mean_E, varE, varF, train_loader, val_loader):
+    model = ForceField(cls, **kw).to(device)
+    torch.manual_seed(0)
+    np.random.seed(0)
+    random.seed(0)
+
+    n_params = sum(p.numel() for p in model.parameters())
+    print(f"  parameters: {n_params}")
+
+    optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    scheduler = lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5,
+                                               patience=10, min_lr=1e-6)
+    hist = {'trE': [], 'valE': [], 'trF': [], 'valF': []}
+    best_s, best_f, best_e, bad = float('inf'), float('inf'), float('inf'), 0
+    t0 = time.perf_counter()
+
+    for epoch in range(EPOCHS):
+        w = 0.0 if epoch < WARMUP_E else min(1.0, (epoch - WARMUP_E) / RAMP_F)
         model.train()
-        epoch_energy_loss = 0.0
-        epoch_force_loss = 0.0
+        optimizer.zero_grad()
+        e_sum, f_sum = 0.0, 0.0
 
-        for (node_batch, edge_batch, triplet_batch, pos_batch,
-             E_total_tar, F_tar, N_batch, elements_batch, cellsize_batch) in train_loader:
+        for step, batch in enumerate(train_loader):
+            try:
+                # warmup: NO force graph at all (no autograd.grad call) — the
+                E_pred, f_pred, E_tar, f_tar = compute_predictions(
+                    model, batch, need_forces=(w > 0), create_graph=True)
+                loss_E = Fn.mse_loss(E_pred, E_tar)
+                loss = loss_E / varE / ACCUM_STEPS
+                loss_F = None
+                if w > 0:
+                    loss_F = Fn.mse_loss(f_pred, f_tar)
+                    loss = loss + w * loss_F / varF / ACCUM_STEPS
+                if not torch.isfinite(loss):
+                    optimizer.zero_grad(set_to_none=True)
+                    torch.cuda.empty_cache()
+                    print(f"  non-finite loss at epoch {epoch+1}, step {step} — "
+                          f"batch skipped")
+                    continue
+                loss.backward()
+            except torch.OutOfMemoryError:
+                optimizer.zero_grad(set_to_none=True)
+                torch.cuda.empty_cache()
+                print(f"  OOM at epoch {epoch+1}, step {step} — batch skipped")
+                continue
 
-            batch_size = len(E_total_tar)
-            optimizer.zero_grad()
+            e_sum += loss_E.item()
+            if loss_F is not None:
+                f_sum += loss_F.item()
+            if (step + 1) % ACCUM_STEPS == 0 or (step + 1) == len(train_loader):
+                gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(),
+                                                       max_norm=GRAD_CLIP)
+                if torch.isfinite(gnorm):
+                    optimizer.step()
+                else:
+                    print(f"  non-finite grad norm at epoch {epoch+1}, "
+                          f"step {step} — update skipped")
+                optimizer.zero_grad()
 
-            batch_energy_loss = 0.0
-            batch_force_loss = 0.0
-
-            for i in range(batch_size):
-                node_i = node_batch[i]
-                cell_i = cellsize_batch[i]
-                F_tar_i = F_tar[i]
-                elements_i = elements_batch[i]
-                
-                pos_i = pos_batch[i].clone().detach().requires_grad_(True)
-                
-                N = N_batch[i]
-                # computing edge features in training to access forces
-                edge_i = edge_features_torch(pos_i, elements_i, cell_i)
-
-                # computing triplet features to access forces
-                trip_i = triplet_features_torch(edge_i)
-
-                # 1. energy loss 
-                E_pred = model.forward_energy(node_i, edge_i, trip_i)
-                loss_E = (E_pred - E_total_tar[i])**2
-                
-
-                # 2. Force loss 
-                grads = torch.autograd.grad(E_pred, pos_i, create_graph=True)[0]
-                F_pred = -grads
-                loss_F = ((F_pred - F_tar_i)**2).mean()
-            
-                batch_energy_loss += loss_E
-                batch_force_loss += loss_F
-                
-
-            energy_loss = batch_energy_loss / batch_size
-            force_loss = batch_force_loss / batch_size 
-
-            total_loss = 0.5*energy_loss + 0.5*force_loss
-            #print("Running batch loss tracker. E_loss:", loss_E_avg) 
-            total_loss.backward()
-            optimizer.step()
-
-            epoch_energy_loss += energy_loss.item()
-            epoch_force_loss += force_loss.item()
-
-        before_lr = optimizer.param_groups[0]['lr']
-        scheduler.step()
-        after_lr = optimizer.param_groups[0]['lr']
-
-        avg_energy_loss = epoch_energy_loss / len(train_loader)
-        avg_force_loss = epoch_force_loss / len(train_loader)
-
-        train_energy_losses.append(avg_energy_loss)
-        train_force_losses.append(avg_force_loss)
-
-        # Evaluation
+        # validation (Forces need a first-order graph, so still has grad)
         model.eval()
+        vE, vF = 0.0, 0.0
+        stats = {'sse': 0.0, 'fsq': 0.0, 'fsum': 0.0, 'n': 0,
+                 'el_se': {el: 0.0 for el in PERIODIC},
+                 'el_n': {el: 0 for el in PERIODIC}}
+        for batch in val_loader:
+            E_pred, f_pred, E_tar, f_tar = compute_predictions(
+                model, batch, need_forces=True, create_graph=False)
+            vE += Fn.mse_loss(E_pred, E_tar).item()
+            vF += Fn.mse_loss(f_pred, f_tar).item()
+            accumulate_force_stats(stats, f_pred, f_tar, batch['node'].to(device))
+        nb, nv = len(train_loader), len(val_loader)
+        vEm, vFm = vE / nv, vF / nv
+        hist['trE'].append(e_sum / nb)
+        hist['valE'].append(vEm)
+        hist['trF'].append(f_sum / nb if w > 0 else float('nan')) 
+        hist['valF'].append(vFm)
+        score = vEm / varE + vFm / varF
+        scheduler.step(score)
 
-        test_epoch_energy = torch.tensor(0.0, device=device) 
-        test_epoch_force = torch.tensor(0.0, device=device)
-        
-        with torch.enable_grad():
-            # force evaluation 
-            for (node_batch, edge_batch, triplet_batch, pos_batch,
-                    E_total_tar,F_tar, N_batch, elements_batch, cellsize_batch) in valid_loader:
-                batch_size = len(E_total_tar)
+        if score < best_s - 1e-6:
+            best_s, best_f, best_e, bad = score, vFm, vEm, 0
+            torch.save({'state_dict': model.state_dict(), 'block': name,
+                        'mean_E': mean_E, 'cutoff_edge': CUTOFF_EDGE,
+                        'cutoff_trip': CUTOFF_TRIP, 'periodic': PERIODIC,
+                        'row_primes': ROW_PRIMES, 'col_primes': COL_PRIMES,
+                        'n_params': n_params, 'val_F': best_f, 'val_E': best_e,
+                        'val_score': best_s, 'epoch': epoch + 1,
+                        'history': {k: list(v) for k, v in hist.items()}},
+                       f'best_{name}.pt')
+        elif w >= 1.0:
+            bad += 1
 
-                batch_energy_loss = 0.0
-                batch_force_loss = 0.0
-                for i in range(batch_size):
-                    node_i = node_batch[i]
-                    cell_i = cellsize_batch[i]
-                    #edge_i = edge_batch[i]
-                    #trip_i = triplet_batch[i]
-                    F_tar_i = F_tar[i]
-                    
-                    elements_i = elements_batch[i]
-                    N = N_batch[i]
+        if (epoch + 1) % 10 == 0:
+            fs = finalize_force_stats(stats)
+            el_txt = "  ".join(f"{el} {v:.3f}" for el, v in fs['el'].items())
+            print(f"  [{name}] Ep {epoch+1:3d} (fw {w:.2f}) | trE {hist['trE'][-1]:8.4f} "
+                  f"valE {vEm:8.4f} | trF {hist['trF'][-1]:.6f} "
+                  f"valF {vFm:.6f} | score {score:6.3f} | R2 {fs['r2']:.3f} | {el_txt}")
+        if bad >= ES_PATIENCE:
+            print(f"  [{name}] early stop at epoch {epoch+1} (score patience {ES_PATIENCE})")
+            break
 
-                    pos_i = pos_batch[i].clone().detach().requires_grad_(True)
-                    edge_i = edge_features_torch(pos_i, elements_i, cell_i)
-                    trip_i = triplet_features_torch(edge_i)
-                    E_pred = model.forward_energy(node_i, edge_i, trip_i)
-                    loss_E = (E_pred - E_total_tar[i])**2
-
-                    grads = torch.autograd.grad(E_pred, pos_i, create_graph=False)[0]
-                    F_pred = -grads
-                    loss_F = ((F_pred - F_tar_i)**2).mean()
-                    batch_energy_loss += loss_E
-                    batch_force_loss += loss_F
-                    
-                test_epoch_energy += batch_energy_loss / batch_size
-                test_epoch_force += batch_force_loss / batch_size
-
-            avg_test_energy = test_epoch_energy / len(valid_loader)
-            avg_test_force = test_epoch_force / len(valid_loader)
-
-            test_energy_losses.append(avg_test_energy.detach().cpu().item())
-            test_force_losses.append(avg_test_force.detach().cpu().item())
-
-            print(f'testing energy loss :{test_energy_losses}')
-            print(f'testing force loss :{test_force_losses}')
-
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch}: Train Loss = {avg_energy_loss:.4f}")
-            print(f"Epoch {epoch}: Train Loss = {avg_force_loss:.4f}")
-
-    model.save('mlp.xtb.pt')
-    return train_energy_losses, test_energy_losses, train_force_losses, test_force_losses
+    dt = (time.perf_counter() - t0) / (epoch + 1)
+    print(f"  [{name}] done: best score {best_s:.4f} (valF {best_f:.6f}, "
+          f"valE {best_e:.4f}), {n_params} params, {dt:.1f} s/epoch")
+    return {'history': hist, 'n_params': n_params,
+            'best_valF': best_f, 'best_valE': best_e, 'best_score': best_s}
 
 
-# VISUALIZATION
-def plot_energy_losses(train_energy_losses, test_energy_losses, model_name):
-    plt.figure(figsize=(10, 4))
-    plt.plot(train_energy_losses, label='Training loss')
-    plt.plot(test_energy_losses, label='Testing loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title(f'{model_name} on xTB Training (H2O for energy)')
-    plt.legend()
-    plt.savefig(f'../training_figs/{model_name}_xtb_energy.png', dpi=150, bbox_inches='tight')
-    plt.close()
-
-def plot_force_losses(train_force_losses, test_force_losses, model_name):
-    plt.figure(figsize=(10, 4))
-    plt.plot(train_force_losses, label='Training loss')
-    plt.plot(test_force_losses, label='Testing loss')
-    plt.xlabel('Epoch')
-    plt.ylabel('Loss')
-    plt.title(f'{model_name} on xTB Training (H2O for forces)')
-    plt.legend()
-    plt.savefig(f'../training_figs/{model_name}_xtb_forces.png', dpi=150, bbox_inches='tight')
-    plt.close()
-
-# ------------------------------------
-# Setting up training for all models 
-#-------------------------------------
-
-
-def train_all(model_name, model_class, train_loader, valid_loader, epochs=500, lr=1e-4):
-    print(f'Training {model_name} model...')
-    model = model_class()
-    model_filename = f'{model_name}_xtb.pt'
-
-    # 1. Load or generate molecules
-    if os.path.exists(model_filename):
-        print(f"Found {model_filename}; loading model.")
-        model.load_state_dict(torch.load(model_filename, map_location=device))
-        
-
-    optimizer = optim.Adam(model.parameters(), lr)
-    scheduler = lr_scheduler.LinearLR(optimizer, start_factor=1.0, end_factor=0.5, total_iters=30)
-
-    train_energy_losses, test_energy_losses, train_force_losses, test_force_losses = train_model_energy_forces(model, train_loader, valid_loader, epochs, optimizer, scheduler)
-    model.save(model_filename)
-
-    return {
-        'model': model,
-        'train_energy': train_energy_losses,
-        'test_energy': test_energy_losses,
-        'train_force': train_force_losses,
-        'test_force': test_force_losses,
-    }
-
-def plot_comparison(results, key, ylabel, filename):
-    fig, ax = plt.subplots(figsize=(10,5))
-    for name, result in results.items():
-        ax.plot(result[key], label=name)
-    plt.xlabel('Epoch')
-    plt.ylabel(ylabel)
-    plt.title(f'{ylabel} comparison across models')
-    plt.legend()
-    plt.savefig(f'../training_figs/{filename}', dpi=150, bbox_inches='tight')
-    plt.close()
-    print('Finished plotting')
-
-# testing function 
-def test_models(model_name, model, test_loader):
-    
-    # evaluate models
+def evaluate_test(name, dataset, test_idx):
+    """Touch the test set exactly ONCE, on the best-score checkpoint."""
+    ckpt = torch.load(f'best_{name}.pt', map_location=device, weights_only=False)
+    cls, kw = MODELS[name]
+    model = ForceField(cls, **kw).to(device)
+    model.load_state_dict(ckpt['state_dict'])
     model.eval()
+    loader = DataLoader(Subset(dataset, test_idx), batch_size=BATCH_SIZE,
+                        collate_fn=collate_fn)
+    tE, tF = 0.0, 0.0
+    stats = {'sse': 0.0, 'fsq': 0.0, 'fsum': 0.0, 'n': 0,
+             'el_se': {el: 0.0 for el in PERIODIC},
+             'el_n': {el: 0 for el in PERIODIC}}
+    for batch in loader:
+        E_pred, f_pred, E_tar, f_tar = compute_predictions(
+            model, batch, need_forces=True, create_graph=False)
+        tE += Fn.mse_loss(E_pred, E_tar).item()
+        tF += Fn.mse_loss(f_pred, f_tar).item()
+        accumulate_force_stats(stats, f_pred, f_tar, batch['node'].to(device))
+    st = finalize_force_stats(stats)
+    return {'testE': tE / len(loader), 'testF': tF / len(loader),
+            'r2': st['r2'], 'el': st['el']}
 
-    all_E_actual = []
-    all_E_pred = []
-
-    all_F_actual = []
-    all_F_pred = []
-
-    with torch.enable_grad():
-        for (node_batch, edge_batch, triplet_batch, pos_batch,
-            E_total_tar, F_tar, N_batch, elements_batch, cellsize_batch) in test_loader:
-
-            batch_size = len(E_total_tar)
-
-            for i in range(batch_size):
-                node_i = node_batch[i]
-                cell_i = cellsize_batch[i]
-                elements_i = elements_batch[i]
-                F_tar_i = F_tar[i]
-
-                pos_i = pos_batch[i].clone().detach().requires_grad_(True)
-
-                edge_i = edge_features_torch(pos_i, elements_i, cell_i)
-                trip_i = triplet_features_torch(edge_i)
-
-                E_pred = model.forward_energy(node_i, edge_i, trip_i)
-
-                grads = torch.autograd.grad(E_pred, pos_i, create_graph=False)[0]
-                F_pred = -grads
-
-                # saving results
-                all_E_actual.append(E_total_tar[i].item())
-                all_E_pred.append(E_pred.detach().cpu().item())
-
-                all_F_actual.append(F_tar_i.detach().cpu().numpy())
-                all_F_pred.append(F_pred.detach().cpu().numpy())
-    
-    all_E_actual = np.array(all_E_actual)
-    all_E_pred = np.array(all_E_pred)
-
-    all_F_actual_flat = np.concatenate([f.flatten() for f in all_F_actual])
-    all_F_pred_flat = np.concatenate([f.flatten() for f in all_F_pred])
-
-    # calculate MAE energy + force
-    mae_energy = mean_absolute_error(all_E_actual, all_E_pred)
-    mae_forces = mean_absolute_error(all_F_actual_flat, all_F_pred_flat)
-    
-    # calculate MSE energy + force
-    mse_energy = mean_squared_error(all_E_actual, all_E_pred)
-    mse_forces = mean_squared_error(all_F_actual_flat, all_F_pred_flat)
-
-    print('----------------------------------------------------------')
-    print('Testing results')
-    print('----------------------------------------------------------')
-    print(f'Energy MAE: {mae_energy}, Forces MAE: {mae_forces}')
-    print(f'Energy MSE: {mse_energy}, Forces MSE: {mse_forces}')
-
-    # to a file, save x, actual energy, actual forces, predicted energy, and predicted forces
-    results_filename = f'{model_name}_test_results.npz'
-    np.savez(
-        results_filename,
-        E_actual=all_E_actual,
-        E_pred=all_E_pred,
-        F_actual=np.array(all_F_actual, dtype=object),
-        F_pred=np.array(all_F_pred, dtype=object),
-    )
-    print(f'saved per-sample test results to {results_filename}')
-
-# MAIN EXECUTION
+# main
 def main():
-    mol_filename = '../train_generation/shuffled_water_dataset.extxyz'
-
-    # 1. Load or generate molecules
-    if os.path.exists(mol_filename):
-        print(f"Found {mol_filename}; loading data (recomputing LJ energy).")
-        molecules = load_from_extxyz(mol_filename)
-    else:
-        print(f"Can't find extended .xyz file")
-        
-    
-    # 2. Convert to tensors
-    print("Converting to tensors...")
-
+    print("Loading training data...")
+    molecules = load_from_extxyz(DATASET_PATH)
     samples, targets_E = molecules_to_tensors(molecules, device)
 
-    # 3. Create Dataset + train/test split (80/20)
-    print('Creating dataset...')
+    mean_E = np.mean(targets_E)
+    print(f"Shifting energies by {mean_E:.2f} eV")
+    samples = [(s[0], s[1], s[2] - mean_E, s[3], s[4]) for s in samples]
+
+    varE = float(np.var(targets_E))
+    varF = (torch.cat([s[3] for s in samples]) ** 2).mean().item()
+    print(f"zero-force baseline MSE: {varF:.4f} (valF must drop well below this)")
+    print(f"energy constant-predictor floor: {varE:.4f} "
+          f"(valE pinned here means the model outputs the mean)")
+    print(f"loss normalisers: varE {varE:.4f}  varF {varF:.4f}  "
+          f"(each loss term starts at 1.0)")
+
     dataset = EnergyDataset(samples)
-    N = len(dataset)
-    indices = torch.randperm(N)
-    train_size = int(0.8 * N)
-    valid_size = int(0.1 * N)
+    train_idx, val_idx, test_idx = make_split(len(samples))
 
-    train_idx = indices[:train_size]
-    valid_idx  = indices[train_size:train_size + valid_size]
-    test_idx = indices[train_size + valid_size:]
+    train_loader = DataLoader(dataset, batch_size=BATCH_SIZE, collate_fn=collate_fn,
+                              sampler=SubsetRandomSampler(train_idx))
+    val_loader = DataLoader(Subset(dataset, val_idx), batch_size=BATCH_SIZE,
+                            collate_fn=collate_fn)
 
-    train_loader = DataLoader(
-        dataset,
-        batch_size=32,
-        collate_fn=collate_fn,
-        shuffle=False,
-        num_workers=0,
-        sampler=SubsetRandomSampler(train_idx)
-    )
+    print("\nParameter counts:")
+    for mname, (mcls, mkw) in MODELS.items():
+        torch.manual_seed(0)
+        m = ForceField(mcls, **mkw)
+        print(f"  {mname:5s}: {sum(p.numel() for p in m.parameters()):7d}")
+        del m
 
-    valid_loader  = DataLoader(
-        dataset,
-        batch_size=32,
-        collate_fn=collate_fn,
-        shuffle=False,
-        num_workers=0,
-        sampler=SubsetRandomSampler(valid_idx)
-    )
+    results = {}
+    for name, (cls, kw) in MODELS.items():
+        print(f"\n=== Training model: {name} ({cls.__name__}) ===")
+        results[name] = _train(name, cls, kw, dataset, mean_E, varE, varF,
+                               train_loader, val_loader)
+        results[name]['test'] = evaluate_test(name, dataset, test_idx)
 
-    test_loader = DataLoader(
-        dataset,
-        batch_size=32,
-        collate_fn=collate_fn,
-        shuffle=False,
-        num_workers=0,
-        sampler=SubsetRandomSampler(test_idx)
-    )
+    # summary
+    print("\nSUMMARY (test set, touched once)")
+    header = (f"{'model':6s} {'params':>8s} {'best valF':>10s} {'best valE':>10s} "
+              f"{'testF':>9s} {'testE':>9s} {'R2':>6s}  per-element F MSE")
+    print(header)
+    for name, r in results.items():
+        el_txt = "  ".join(f"{el} {v:.3f}" for el, v in r['test']['el'].items())
+        print(f"{name:6s} {r['n_params']:8d} {r['best_valF']:10.6f} "
+              f"{r['best_valE']:10.4f} "
+              f"{r['test']['testF']:9.6f} {r['test']['testE']:9.4f} "
+              f"{r['test']['r2']:6.3f}  {el_txt}")
 
-    print("Beginning to train models...")
+    print("\nLadder reading:")
+    print("  MLP        floor: learned messages, fixed aggregation weights")
+    print("  MHA - MLP  value of content-adaptive (softmax) neighbour weighting")
+    print("  Conv - MLP value of radial gating + explicit triplet bookkeeping")
+    print("  Comb - max(singles)  do the ideas compose, or are they redundant?")
 
-    models = {
-    'MLP': WedgeMLP,
-    'Convolutional': ConvNet
-    #Message Passing': MP_MLP
-    }
-    
-    results ={}
+    # comparison plot 
+    plt.figure(figsize=(14, 6))
+    plt.subplot(1, 2, 1)
+    for name, r in results.items():
+        plt.plot(r['history']['valE'], label=name)
+    plt.axhline(varE, color='gray', ls=':', label='const-E floor')
+    plt.title('Energy MSE (val)'); plt.xlabel('Epoch'); plt.legend()
 
-    for name, mlff in models.items():
-        results[name] = train_all(name, mlff, train_loader, valid_loader, epochs=250)
-        test_metrics = test_models(name, results[name]['model'], test_loader)
-        results[name]['test_metrics'] = test_metrics
-        print(f'Done training {name}')
+    plt.subplot(1, 2, 2)
+    for name, r in results.items():
+        plt.semilogy(r['history']['valF'], label=name)
+    plt.axhline(varF, color='gray', ls=':', label='zero-model baseline')
+    plt.axhline(EPTFF_REF, color='k', ls='--', label='EPTFF (prior arch)')
+    plt.title('Force MSE (val, log)'); plt.xlabel('Epoch'); plt.legend()
 
-    for name, result in results.items():
-        plot_energy_losses(result['train_energy'], result['test_energy'], name)
-        plot_force_losses(result['train_force'], result['test_force'], name)
-    
-    # compare between plots
-    plot_comparison(results, key='test_energy', ylabel='Energy Loss', filename='energy_comparison.png')
-    plot_comparison(results, key='test_force', ylabel='Force Loss', filename='force_comparison.png')
+    plt.tight_layout()
+    plt.savefig('comparison_curves.png', dpi=150)
+    plt.show()
+    print("Saved comparison_curves.png and best_{mlp,mha,conv,comb}.pt")
 
-    # leave for now 
-    # 5. Single‑molecule test (H2O equilibrium)
-    
 
 if __name__ == "__main__":
     main()
