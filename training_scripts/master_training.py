@@ -129,23 +129,25 @@ def molecules_to_tensors(molecules, dev):
 
 def build_graph_features(pos, cell,
                          cutoff_edge=CUTOFF_EDGE, cutoff_trip=CUTOFF_TRIP):
-    """Build pairwise and triplet geometric features for the molecular graph
-
-        Parameters:
-        ------------
-            pos: torch.Tensor
-                Atomic positions with shape (batch, atoms, 3)
-            cell: torch.Tensor
-                Simulation cell dimensions with shape (batch, 3)
-            cutoff_edge: float
-                Maximum distance used to create pairwise edges in angstroms
-            cutoff_trip: float
-                Maximum distance used to create triplet features in angstroms
-
+    """Builds pairwise and three-atom graph features from atomic coordinates
+        
+        Parameters: 
+        --------------
+    
+        pos : torch.Tensor
+            Atomic positions
+        cell : torch.Tensor
+            Simulation cell dimensions
+        cutoff_edge : float
+            Maximum distance for including an atom pair as an edge
+        cutoff_trip : float
+            Maximum distance for including atoms in a triplet
+    
         Returns:
-        -----------
-            dict
-                Dictionary containing edge distances, atom indices, masks and triplet features
+        -------------
+    
+        dict
+            Dictionary of distances, atomic indices, and masks for edges and triplets
         """
     B, N, _ = pos.shape
     dev = pos.device
@@ -214,12 +216,39 @@ def build_graph_features(pos, cell,
 # graph helpers 
 # Pair ordering for edges
 def _triu_index(u, v, N):
+    """Assigns unique indexes to each pair of atoms to prevent duplicate pairs
+        
+        Parameters:
+        ------------
+        u, v : torch.Tensor 
+            Indices of two atoms 
+        
+        N : int
+            Unique index representing the pair of atoms """
     lo = torch.minimum(u, v)
     hi = torch.maximum(u, v)
     return lo * (2 * N - lo - 1) // 2 + (hi - lo - 1)
 
 
 def scatter_sum(src, index, B, N):
+    """Sum values according to their indices for each batch 
+        
+        Parameters:
+        ----------
+        src : torch.Tensor
+            Values to be summed
+        index : torch.Tensor
+            Indices specifying where each value should be added
+        B : int
+            Number of batches
+        N : int
+            Number of nodes or atoms per batch
+    
+        Returns
+        -------
+        torch.Tensor
+            Tensor containing the summed values for each node in each batch
+        """
     b = torch.arange(B, device=src.device).unsqueeze(1).expand(B, index.shape[1])
     out = src.new_zeros(B * N, src.shape[-1])
     out.index_add_(0, (b * N + index).reshape(-1), src.reshape(-1, src.shape[-1]))
@@ -227,6 +256,25 @@ def scatter_sum(src, index, B, N):
 
 
 def scatter_mean(src, index, weight, B, N):
+    """Calculates a weighted mean of values for each node
+        
+        Parameters:
+        ----------
+        src: torch.Tensor
+            Values or features to be averaged
+        index : torch.Tensor
+            Indices specifying which node each value belongs to
+        weight : torch.Tensor
+            Weight applied to each value
+        B : int
+            Number of batches
+        N : int
+            Number of nodes or atoms in each batch
+    
+        Returns
+        -------
+        torch.Tensor
+            Weighted mean values for each node"""
     w = weight.unsqueeze(-1)
     num = scatter_sum(src * w, index, B, N) 
     den = scatter_sum(w, index, B, N)       
@@ -234,17 +282,55 @@ def scatter_mean(src, index, weight, B, N):
 
 
 def gather_nodes(h, idx):
+    """Retrieve node features using specified indices
+    
+        Parameters
+        ----------
+        h : torch.Tensor
+            Node feature tensor
+        idx : torch.Tensor
+            Indices of the nodes to retrieve
+    
+        Returns
+        -------
+        torch.Tensor
+            Features of the selected nodes
+        """
     return h.gather(1, idx.unsqueeze(-1).expand(-1, -1, h.shape[-1]))
 
 # basis / cutoff 
 
 def smooth_cutoff(r, rc):
+    """Applies a smooth cosine cutoff to atomic distances
+        Parameters: 
+        ---------------
+            r: torch.Tensor
+                Distances between atoms 
+            rc: float
+                Cutoff distance 
+        
+        Returns:
+        ---------------
+        torch.Tensor
+            Smooth cut off values from 1 to 0.
+        """
     x = (r / rc).clamp(max=1.0)
     s = 0.5 * (1.0 + torch.cos(math.pi * x))
     return torch.where(r < rc, s, torch.zeros_like(s))
 
 
 class RadialBasis(nn.Module):
+    """Convert distancs into radial basis function features 
+            
+            Parameters:
+            -----------
+            r: torch.Tensor
+                Interatomic distances 
+                
+            Returns:
+            ---------
+            torch.Tensor 
+                Gaussian radial distribution features for each distance"""
     def __init__(self, r_min, r_max, n_basis):
         super().__init__()
         self.register_buffer('centers', torch.linspace(r_min, r_max, n_basis))
@@ -257,6 +343,21 @@ class RadialBasis(nn.Module):
 # frame-free invariant edge tokens 
 
 class EdgeTokens(nn.Module):
+    """Create feature tokens for edges using distances and triplet information
+    
+        Parameters
+        ----------
+        rbf_edge : nn.Module
+            Radial basis function used to encode edge distances
+        rbf_trip : nn.Module
+            Radial basis function used to encode triplet distances
+        fan_width : int, optional
+            Size of the triplet interaction features
+        cutoff_edge : float, optional
+            Maximum distance used for edge interactions
+        cutoff_trip : float, optional
+            Maximum distance used for triplet interactions
+        """
     def __init__(self, rbf_edge, rbf_trip, fan_width=FAN_WIDTH):
         super().__init__()
         self.rbf_edge, self.rbf_trip = rbf_edge, rbf_trip
@@ -266,6 +367,22 @@ class EdgeTokens(nn.Module):
                                  nn.Linear(fan_width, fan_width))
 
     def forward(self, feats, N):
+        """
+                Generate edge tokens from graph features
+        
+                Parameters:
+                ----------
+                feats : dict
+                    Graph features containing edge distances, triplet distances,
+                    atom indices, and masks
+                N : int
+                    Number of atoms in each structure
+        
+                Returns:
+                -------
+                tuple
+                    Edge feature tokens and triplet interaction features
+                """
         d = feats['edge_d']                                    # (B,E)
         base = torch.cat([torch.ones_like(d).unsqueeze(-1),    # affine carrier
                           (d * d / (CUTOFF_EDGE * CUTOFF_EDGE)).unsqueeze(-1),
@@ -299,11 +416,39 @@ class EdgeTokens(nn.Module):
 
 # the four context blocks 
 def _small_init_last(seq, std=1e-2):
+    """Initialise the final layer with small random weights
+    
+        Parameters:
+            seq : nn.Sequential
+                Neural network sequence containing the final layer
+            std : float
+                Standard deviation used for weight initialisation
+    
+        Returns:
+            None
+                Initialises the weights and bias of the final layer in place
+        """
     nn.init.normal_(seq[-1].weight, std=std)
     nn.init.zeros_(seq[-1].bias)
 
 
 class MlpBlock(nn.Module):
+    """Neural network block for updating atom features using edge information
+    
+        Parameters:
+            d : int
+                Dimension of the atom feature vectors
+            token_dim : int
+                Dimension of the edge token features
+            n_rbf : int
+                Number of radial basis function features
+            width : int
+                Width of the hidden layer
+    
+        Returns:
+            None
+                Initialises the neural network layers
+        """
     def __init__(self, d, token_dim, n_rbf, width=96):
         super().__init__()
         self.msg = nn.Sequential(nn.Linear(d + token_dim, width), nn.Mish(),
@@ -312,6 +457,22 @@ class MlpBlock(nn.Module):
         _small_init_last(self.upd)
 
     def forward(self, h, feats, token, psi):
+        """Update atom features using neighbouring atom information
+        
+                Parameters:
+                    h : torch.Tensor
+                        Atom feature tensor
+                    feats : dict
+                        Graph features containing edge distances and atom indices
+                    token : torch.Tensor
+                        Edge feature tokens
+                    psi : torch.Tensor
+                        Triplet interaction features
+    
+                Returns:
+                    torch.Tensor
+                        Updated atom feature tensor
+                """
         B, N, _ = h.shape
         i, j = feats['edge_atom'].unbind(-1)
         keep = smooth_cutoff(feats['edge_d'], CUTOFF_EDGE) * feats['edge_mask']
@@ -321,6 +482,22 @@ class MlpBlock(nn.Module):
 
 
 class MhaBlock(nn.Module):
+    """Multi-head attention block 
+    
+        Parameters:
+            d : int
+                Dimension of the atom feature vectors
+            token_dim : int
+                Dimension of the edge token features
+            n_rbf : int
+                Number of radial basis function features
+            heads : int
+                Number of attention heads
+    
+        Returns:
+            None
+                Initialises the attention layers
+        """
     def __init__(self, d, token_dim, n_rbf, heads=4):
         super().__init__()
         assert d % heads == 0
@@ -349,6 +526,24 @@ class MhaBlock(nn.Module):
 
 
 class ConvBlock(nn.Module):
+    """Convolutional block for combining pairwise and triplet information
+    
+        Parameters:
+            d : int
+                Dimension of the atom feature vectors
+            token_dim : int
+                Dimension of the edge token features
+            n_rbf : int
+                Number of radial basis function features
+            fan_width : int
+                Size of the triplet interaction features
+            ang_width : int
+                Width of the hidden angular interaction layer
+    
+        Returns:
+            None
+                Initialises the convolutional layers
+        """
     def __init__(self, d, token_dim, n_rbf, fan_width=FAN_WIDTH, ang_width=48):
         super().__init__()
         self.n_rbf, self.fan_width = n_rbf, fan_width
@@ -381,6 +576,25 @@ class ConvBlock(nn.Module):
 
 
 class CombinedBlock(nn.Module):
+    """Combined black box model that uses attention, convolutional, angular and global features
+         Parameters:
+            d : int
+                Dimension of the atom feature vectors
+            token_dim : int
+                Dimension of the edge token features
+            n_rbf : int
+                Number of radial basis function features
+            fan_width : int
+                Size of the triplet interaction features
+            heads : int
+                Number of attention heads
+            ang_width : int
+                Width of the hidden angular interaction layer
+    
+        Returns:
+            None
+                Initialises the combined neural network layers
+        """
     def __init__(self, d, token_dim, n_rbf, fan_width=FAN_WIDTH, heads=4, ang_width=48):
         super().__init__()
         self.hd, self.dk, self.d = heads, d // heads, d
@@ -436,6 +650,18 @@ MODELS = {
 
 class ForceField(nn.Module):
     def __init__(self, block_cls, d=D_MODEL, n_rbf=N_RBF, **block_kw):
+        """Initialise the machine learning force field
+
+        Parameters:
+            block_cls: type
+                Context block class used by the force field
+            d: int
+                Dimension of the atom feature representation
+            n_rbf: int
+                Number of radial basis functions
+            block_kw: dict
+                Additional arguments passed to the context block
+        """
         super().__init__()
         self.rbf_edge = RadialBasis(0.4, CUTOFF_EDGE, n_rbf)
         self.rbf_trip = RadialBasis(0.4, CUTOFF_TRIP, n_rbf)
@@ -466,6 +692,16 @@ class ForceField(nn.Module):
 #  data pipeline
 
 def collate_fn(batch):
+    """Combine individual samples into a batch for model training
+
+    Parameters:
+        batch: list
+            List of individual molecular samples
+
+    Returns:
+        dict
+            Batched molecular features and target properties
+    """
     return {'node': torch.stack([s['node'] for s in batch]),
             'pos': torch.stack([s['pos'] for s in batch]),
             'E_target': torch.stack([s['E_target'] for s in batch]),
@@ -475,12 +711,34 @@ def collate_fn(batch):
 
 class EnergyDataset(Dataset):
     def __init__(self, samples):
+        """Initialise the dataset
+
+        Parameters:
+            samples: list
+                List of molecular samples
+        """
         self.samples = samples
 
     def __len__(self):
+        """Return the number of molecular samples
+
+        Returns:
+            int
+                Number of samples in the dataset
+        """
         return len(self.samples)
 
     def __getitem__(self, idx):
+        """Return one molecular sample
+
+        Parameters:
+            idx: int
+                Index of the sample to retrieve
+
+        Returns:
+            dict
+                Molecular features and target energy and forces
+        """
         node_t, pos_t, E_total, F_atom_t, cell_t = self.samples[idx]
         return {'node': node_t, 'pos': pos_t, 'E_target': E_total,
                 'F_target': F_atom_t, 'cell': cell_t}
@@ -488,6 +746,20 @@ class EnergyDataset(Dataset):
 
 # Split once and lee[ identical data across models and reruns.
 def make_split(n):
+    """Create or load fixed training, validation and test splits
+
+    Parameters:
+        n: int
+            Total number of samples in the dataset
+
+    Returns:
+        train: list
+            Indices of the training samples
+        val: list
+            Indices of the validation samples
+        test: list
+            Indices of the test samples
+    """
     if os.path.exists(SPLIT_JSON):
         s = json.load(open(SPLIT_JSON))
         if s.get('n') == n:
@@ -504,6 +776,28 @@ def make_split(n):
 
 
 def compute_predictions(model, batch, need_forces, create_graph=False):
+    """Calculate predicted energies and derive forces
+
+    Parameters:
+        model: torch.nn.Module
+            Machine learning force field used for prediction
+        batch: dict
+            Batch of molecular features and target properties
+        need_forces: bool
+            Whether forces should be calculated from the energy gradient
+        create_graph: bool
+            Whether to keep the computational graph for higher-order gradients
+
+    Returns:
+        E_pred: torch.Tensor
+            Predicted total energies
+        f_pred: torch.Tensor or None
+            Predicted atomic forces or None if forces are not calculated
+        E_tar: torch.Tensor
+            Reference total energies
+        F_tar: torch.Tensor
+            Reference atomic forces
+    """
     node = batch['node'].to(device)
     pos = batch['pos'].to(device)
     if need_forces:
@@ -549,6 +843,31 @@ def finalize_force_stats(stats):
 # --------------------------------- training ----------------------------------
 
 def _train(name, cls, kw, dataset, mean_E, varE, varF, train_loader, val_loader):
+    """Train one force field architecture and save its best checkpoint
+
+    Parameters:
+        name: str
+            Name of the model architecture
+        cls: type
+            Context block class used by the model
+        kw: dict
+            Additional arguments for the context block
+        dataset: EnergyDataset
+            Complete molecular dataset
+        mean_E: float
+            Mean reference energy used to shift the target energies
+        varE: float
+            Variance of the reference energies used to normalise energy loss
+        varF: float
+            Mean squared reference force used to normalise force loss
+        train_loader: DataLoader
+            DataLoader containing the training data
+        val_loader: DataLoader
+            DataLoader containing the validation data
+
+    Returns:
+        dict
+            Training, number of parameters and best validation results"""
     model = ForceField(cls, **kw).to(device)
     torch.manual_seed(0)
     np.random.seed(0)
