@@ -5,6 +5,8 @@
 
 This project investigates the physical robustness of machine learning force fields (MLFFs) for modelling water during molecular dynamics simulations. The study developed a series of machine learning force fields with simple architectures to identify potential failure modes for water, and identify to what extent can they reliably reproduce the underlying physics of water. Model performace was evaluated using both conventional machine learning metrics, trajectory analysis, and physically informed tests.
 
+The other repository branches show development of models, training regime and testing framework.
+
 ## Requirements
 
 * Python
